@@ -1,0 +1,12 @@
+[package]
+name = "mini-plonk"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "setup"
+path = "./src/kzg_setup.rs"
+
+[dependencies]
+ark-bn254 = "0.5.0"
+rand = "0.9.1"

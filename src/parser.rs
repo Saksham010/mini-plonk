@@ -1,7 +1,12 @@
 // Plonkish arithmetization
 use std::fs;
 use regex::Regex;
-
+use std::io::BufReader;
+use serde_json;
+use std::collections::HashMap;
+use ark_bn254::Fr; // Scalar field
+use ark_ff::fields::Field;
+ 
 
 const OPERATIONS:[&str;4] = ["*","+","-","/"];
 
@@ -146,6 +151,25 @@ fn get_lro(c:&String,index:&usize,coeff_matrix:&mut Vec<Vec<String>>)->(String,S
 
 }
 
+//Read witness values
+fn read_witness(path:&str)-> HashMap<String,String>{
+    let file = fs::File::open(path).expect("File error: Error opening {:?} !!");
+    let reader = BufReader::new(file);
+    let witness_values:HashMap<String,String> = serde_json::from_reader(reader).expect("Serde error: Cannot read json!!");
+    witness_values
+}
+
+//Convert i32 to fr
+fn get_fr_from_i32(num:i32)->Fr{
+    let num_fr = if num <0{
+        // If negative value
+        -Fr::from((num*-1) as u64) //Negative a positive scalar field
+    }else{
+        // If positive
+        Fr::from(num as u64)
+    };
+    num_fr
+}
 fn main() {
     let circuit = fs::read_to_string("./plonk.circuit").unwrap().replace("\r\n",",");
     let circuit_end = circuit.chars().nth(circuit.len()-1).expect("Index out of bounds");
@@ -172,8 +196,9 @@ fn main() {
 
     // 0.a) Create coefficient matrix (n*3)
     let mut coeff_matrix:Vec<Vec<String>> = vec![vec![String::from("");3];constraints.len()];
-    let mut operand_list:Vec<Vec<String>> = vec![vec![String::from("");3];constraints.len()];
+    let mut operand_list:Vec<Vec<String>> = Vec::new();
     let mut operator_list:Vec<char> = vec!['0';constraints.len()];
+    println!("Initialized operand list: {:?}",operand_list);
     // a) Transform into multiplication and addition gates
     let mut index:usize = 0;
     for c in constraints{
@@ -186,6 +211,54 @@ fn main() {
     println!("Final coeff matrix: {:?}",coeff_matrix);
     println!("Operand_list: {:?}",operand_list);
     println!("Operator list: {:?}",operator_list);
+
+    // Fetch witness json value for the operands
+    let witness:HashMap<String,String> = read_witness("./src/witness.json");
+    let mut operand_val_list:Vec<Vec<Fr>> = Vec::new();
+    //Check if witness matches the circuit
+    for (constraint_no,op_list) in operand_list.iter().enumerate(){
+        let mut temp:Vec<Fr> = Vec::new();
+        for operand in op_list {
+            let mut invertible:bool = false;
+            let mut _operand = operand.clone();
+            // Checks for invertible operator
+            if _operand.find("{").is_some() && _operand.find("}").is_some(){
+                //Invertible
+                invertible = true;
+                let re = Regex::new(r"\{([a-zA-Z]+)\}").unwrap();
+                if let Some(val) = re.captures(&operand) {
+                    _operand = val[1].to_string();  //Update the operand
+                }
+
+            }
+            // Check if the witness containst the key or not
+            if !witness.contains_key(&_operand){
+                panic!("Witness doesn't match the circuit!!");
+            }else{
+                let value = witness.get(&_operand).expect("Hashmap Error: Matching key not found!!");
+                let num:i32 = value.parse().expect("Parsing error: Invalid number!!");
+                let mut num_fr = get_fr_from_i32(num);
+
+                // Convert to finite field element
+                if invertible{
+                    //Invert 
+                    num_fr = num_fr.inverse().expect("Inverse error: No inverse exists for zero");
+                }
+                temp.push(num_fr.clone());
+            }
+        }
+
+        //Push the temp and clear
+        operand_val_list.push(temp);
+    }
+
+    println!("Operand value list: {:?}",operand_val_list);
+
+    // Construct execution trace
+
+
+
+    // Evaluate how the deterministic oracle with fiat shamir transformation will work
 
 
 }

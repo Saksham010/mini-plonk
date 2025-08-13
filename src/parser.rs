@@ -6,8 +6,9 @@ use serde_json;
 use std::collections::HashMap;
 use ark_bn254::Fr; // Scalar field
 use ark_ff::fields::Field;
- 
-
+use ark_poly::{EvaluationDomain, Radix2EvaluationDomain, univariate::DensePolynomial}; 
+use ark_poly::DenseUVPolynomial;
+   
 const OPERATIONS:[&str;4] = ["*","+","-","/"];
 
 // Macro to simulate default params
@@ -170,6 +171,78 @@ fn get_fr_from_i32(num:i32)->Fr{
     };
     num_fr
 }
+
+//Get evaluation from execution trace
+fn get_evals(execution_trace:&Vec<Vec<Fr>>,col_index:usize)->Vec<Fr>{
+    let mut eval_list:Vec<Fr> = Vec::new();
+    let mut c_index = 0;
+    for row in execution_trace{
+        for val in row{
+            if c_index == col_index{
+                eval_list.push(*val);
+                break;//Break this loop
+            }
+
+            c_index = c_index+1;
+        }
+        c_index=0;//Reset
+
+    }
+    eval_list
+}
+
+//Generate roots of unity
+fn generate_evaluation_domain(size:usize)->Vec<Fr>{
+    let domain = Radix2EvaluationDomain::<Fr>::new(size).expect("Evaluation domain generation failed!!");  
+    let roots: Vec<Fr> = domain.elements().collect(); 
+    roots
+}
+
+// Get evaluation domain at i'th position
+fn get_eval_at(i:usize,evaluation_domain:Vec<Fr>)->Fr{
+    evaluation_domain[i]
+}
+
+//Get denseuv polynomial from vec
+fn get_dense_uv_poly(coeff:Vec<Fr>)->DensePolynomial<Fr>{
+    DensePolynomial::from_coefficients_vec(coeff)
+}
+
+
+//Lagrange interpolation
+fn lagrange_interpolation(x:&Vec<Fr>,y:Vec<Fr>)->DensePolynomial<Fr>{
+    if x.len() != y.len(){
+        panic!("Interpolation error: X,Y length is not equal!!");
+    }
+
+    let mut lagrange_basis_poly:Vec<DensePolynomial<Fr>>=Vec::new();
+    let mut interpolated_poly:DensePolynomial<Fr> = get_dense_uv_poly(vec![Fr::from(0)]);
+
+
+    for i in 0..x.len(){    
+        let mut li_x:DensePolynomial<Fr> = DensePolynomial::from_coefficients_vec(vec![Fr::from(1)]);
+        for k in x {
+            // k != wi 
+            if *k != x[i]{
+                //(x-k)/(wi-k)
+                // let denominator:Fr = x[i]-*k;
+                // let denom_inv = denominator.inverse().expect("Inverse error: Division by zero!!");
+                // let li:DensePolynomial<Fr> = get_dense_uv_poly(vec![-*k,Fr::from(1)]) * denom_inv;
+
+                let t_li:DensePolynomial<Fr> = (get_dense_uv_poly(vec![Fr::from(0),Fr::from(1)]) - get_dense_uv_poly(vec![*k]))/get_dense_uv_poly(vec![x[i]-*k]); 
+                li_x = li_x * t_li;
+            }
+            
+        }
+        // lagrange_basis_poly.push(li);
+        interpolated_poly = interpolated_poly + get_dense_uv_poly(vec![y[i]]) * li_x;
+
+    }
+    println!("Interpolated polynomial: {:?}", &interpolated_poly);
+
+    interpolated_poly
+
+}
 fn main() {
     let circuit = fs::read_to_string("./plonk.circuit").unwrap().replace("\r\n",",");
     let circuit_end = circuit.chars().nth(circuit.len()-1).expect("Index out of bounds");
@@ -201,8 +274,8 @@ fn main() {
     println!("Initialized operand list: {:?}",operand_list);
     // a) Transform into multiplication and addition gates
     let mut index:usize = 0;
-    for c in constraints{
-        let (l_operand,r_operand,o_operand,operator) = get_lro(&c,&index,&mut coeff_matrix);
+    for c in &constraints{
+        let (l_operand,r_operand,o_operand,operator) = get_lro(c,&index,&mut coeff_matrix);
         operand_list.push(vec![l_operand,r_operand,o_operand]);
         operator_list[index] = operator;
         index = index+1;
@@ -254,11 +327,92 @@ fn main() {
 
     println!("Operand value list: {:?}",operand_val_list);
 
-    // Construct execution trace
+    // Convert coeff matrix element into finite field
+    let mut coeff_matrix_fr:Vec<Vec<Fr>> = vec![vec![Fr::from(1u64);3];constraints.len()];
 
+    for (cindex,coeff_list) in coeff_matrix.iter().enumerate(){
+        for (_ci,celement) in coeff_list.iter().enumerate(){
+            // No coeff -> 1
+            if celement == ""{
+                continue;
+                // coeff_matrix_fr[cindex][_ci]=Fr::from(1u64); //Which is initialized by default
+            }
+            else{
+                let num:i32 = celement.parse().expect("Parsing error: Invalid number!!");
+                let num_fr = get_fr_from_i32(num);
+                coeff_matrix_fr[cindex][_ci] = num_fr;
+            }
+
+        }
+
+    }
+
+    println!("Coeff_matrix_fr: {:?}",coeff_matrix_fr);
+
+    // Construct execution trace
+    // Wl | Wr | Wo | Qm | Ql | Qr | Qo | Qc
+    let mut execution_trace:Vec<Vec<Fr>> = vec![vec![Fr::from(0u64);8];constraints.len()];
+
+    for (i_c, coeff_fr_list) in coeff_matrix_fr.iter().enumerate() {
+        for (i_w,witness_fr_list) in operand_val_list.iter().enumerate(){
+            // Same row
+            if i_c == i_w {
+                // Iterate over the row's columns
+                for (col_i, (coeff_fr, witness_fr)) in coeff_fr_list.iter().zip(witness_fr_list).enumerate(){
+                    execution_trace[i_c][col_i] = coeff_fr*witness_fr;
+                }
+                //Instantiate selector for the constraint
+                if operator_list[i_c] == '*'{
+                    //Multiplication gate
+                    execution_trace[i_c][3] = Fr::from(1u64); //Qm=1
+                    execution_trace[i_c][6] = -Fr::from(1u64); //Qo=-1
+                }else{
+                    //Addition gate
+                    execution_trace[i_c][4] = Fr::from(1u64); //Ql=1
+                    execution_trace[i_c][5] = Fr::from(1u64); //Qr=1
+                    execution_trace[i_c][6] = -Fr::from(1u64); //Qo=-1
+                }
+
+                break; //Break inner loop
+
+            }
+        }
+    }
+    println!("Execution trace: {:?}",execution_trace);
+
+    //Roots of unity (1,w,w^2,w^3,w^4,..,w^n-1)
+    let evaluation_domain:Vec<Fr> = generate_evaluation_domain(constraints.len());
+    let wl_eval = get_evals(&execution_trace,0);
+    let wr_eval = get_evals(&execution_trace,1);
+    let wo_eval = get_evals(&execution_trace,2);
+    let qm_eval = get_evals(&execution_trace,3);
+    let ql_eval = get_evals(&execution_trace,4);
+    let qr_eval = get_evals(&execution_trace,5);
+    let qo_eval = get_evals(&execution_trace,6);
+    let qc_eval = get_evals(&execution_trace,7);
+    println!("-------------------------------------------------------------");
+    println!("Evaluation domain : {:?}",&evaluation_domain);
+    println!("Evaluation y: {:?}",&wl_eval );
+
+    //Lagrange interpolation from the execution trace
+    let wl_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,wl_eval);
+    let wr_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,wr_eval);
+    let wo_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,wo_eval);
+    let qm_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qm_eval);
+    let qr_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qr_eval);
+    let qo_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qo_eval);
+    let qc_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qc_eval);
+
+    //Public inputs
 
 
     // Evaluate how the deterministic oracle with fiat shamir transformation will work
+
+    // Linear combination
+
+
+
+    // Proof generation
 
 
 }

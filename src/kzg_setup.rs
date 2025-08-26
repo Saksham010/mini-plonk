@@ -39,6 +39,8 @@ fn compute_srs(generator:G1,tau:Fr,circuit_size:i32) -> Vec<G1>{
     let mut elements:Vec<G1> = Vec::new();
     for i in 0..circuit_size{
         let ptau:Fr = compute_powers_of_tau(tau,i);
+        println!("PTAU: {:?}",&ptau);
+        println!("G_PTAU: {:?}",generator*ptau);
         elements.push(generator * ptau);
 
     }

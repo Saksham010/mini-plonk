@@ -4,10 +4,28 @@ use regex::Regex;
 use std::io::BufReader;
 use serde_json;
 use std::collections::HashMap;
-use ark_bn254::Fr; // Scalar field
-use ark_ff::fields::Field;
+use ark_bn254::{Fr,FqConfig,G1Projective as G1, G2Projective as G2}; // Scalar field
+use ark_ff::fields::{Field,PrimeField};
+use ark_ff::{Fp,MontBackend,UniformRand};
+use rand::thread_rng;
+
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain, univariate::DensePolynomial}; 
 use ark_poly::DenseUVPolynomial;
+
+use spongefish::codecs::arkworks_algebra::*;  
+use spongefish::{DomainSeparator,DefaultHash};
+
+use std::fs::File;
+use std::io::{Result,Read,Cursor};
+use ark_serialize::CanonicalSerialize;
+use ark_serialize::Write;
+use ark_serialize::CanonicalDeserialize;
+
+use std::ops::Mul;
+
+
+
+// use ark_ff::fields::PrimeField;
    
 const OPERATIONS:[&str;4] = ["*","+","-","/"];
 
@@ -243,6 +261,104 @@ fn lagrange_interpolation(x:&Vec<Fr>,y:Vec<Fr>)->DensePolynomial<Fr>{
     interpolated_poly
 
 }
+
+// Sample random field elements
+fn sample_random_scalars(num_of_scalars:i32)->Vec<Fr>{
+    let mut scalar_arr:Vec<Fr> = Vec::new();
+    for i in 0..num_of_scalars{
+        let mut rng = thread_rng();
+        let random_fr: Fr = Fr::rand(&mut rng);
+        scalar_arr.push(random_fr);
+    }
+    scalar_arr
+}
+
+// Vanishing polynomial (Zh(x)) (For roots of unity)
+fn compute_vanishing_poly(eval_domain:&Vec<Fr>)->DensePolynomial<Fr>{
+
+    let x_poly:DensePolynomial<Fr> = get_dense_uv_poly(vec![Fr::from(0),Fr::from(1)]); // x
+    let mut x_n_poly:DensePolynomial<Fr> = get_dense_uv_poly(vec![Fr::from(1)]);
+    for i in eval_domain{
+        x_n_poly = x_n_poly*&x_poly;
+        
+    }
+    let z_h_poly = x_n_poly - get_dense_uv_poly(vec![Fr::from(1)]); //x^n-1
+    z_h_poly
+}   
+
+// s^k
+fn get_eval_k(tau:Fr,times:usize)->Fr{
+    let mut t_final =Fr::from(1u8);
+    for _ in 0..times{
+        t_final = t_final*tau;
+    }
+    t_final
+
+}
+
+// Load srs
+fn load_srs_from_file(file_name:&str) -> Result<Vec<G1>>{
+    let mut final_srs:Vec<G1> = Vec::new();
+
+    let mut file = File::open(file_name).unwrap();
+    println!("Loading buffer....");
+
+    //Buffer to load the file
+    let mut buffer:Vec<u8> = Vec::new();
+    file.read_to_end(&mut buffer).unwrap();
+
+    println!("Buffer loaded....");
+
+    let mut cursor = Cursor::new(&buffer[..]);
+
+    //Deserialze the file
+    while (cursor.position() as usize) < cursor.get_ref().len(){ 
+
+        //Read the length
+        let mut element_len =[0u8];
+        cursor.read_exact(&mut element_len).unwrap(); // Read x length
+
+        let mut x_element: Vec<u8> = vec![0u8;element_len[0] as usize];
+        cursor.read_exact(&mut x_element).unwrap(); //Read x 
+
+        cursor.read_exact(&mut element_len).unwrap(); // Read y length
+        let mut y_element: Vec<u8> = vec![0u8;element_len[0] as usize];
+        cursor.read_exact(&mut y_element).unwrap(); //Read y 
+
+        cursor.read_exact(&mut element_len).unwrap(); // Read z length
+        let mut z_element: Vec<u8> = vec![0u8;element_len[0] as usize];
+        cursor.read_exact(&mut z_element).unwrap(); //Read z
+
+        //Deseralize
+        let mut cursorx = Cursor::new(x_element);
+        let mut cursory = Cursor::new(y_element);
+        let mut cursorz = Cursor::new(z_element);
+
+        let deserialized_x:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorx).unwrap();
+        let deserialized_y:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursory).unwrap();
+        let deserialized_z:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorz).unwrap();
+
+        let element:G1 = G1::new_unchecked(deserialized_x, deserialized_y, deserialized_z); //Note only unchecked returns projective representation, since we construct from already existing group we can ignore the check
+
+        final_srs.push(element);
+    }
+
+    Ok(final_srs)
+}
+
+//Compute commitment [a]1
+fn compute_commitment(srs:&Vec<G1>,x_poly:DensePolynomial<Fr>)->G1{
+    let mut val_commitment:G1 = *srs.get(0).expect("Index out of bounds"); // g^1
+
+    for (i,coeff) in x_poly.coeffs().iter().enumerate(){ // Ensure order of a_poly.coeffs()
+        // We get powers of tau from KZG setup and use here
+        let g_i_tau:G1 = *srs.get(i).expect("Index out of bounds");
+        let g_i_tau_s:G1 = g_i_tau.mul(*coeff);
+        val_commitment = val_commitment + g_i_tau_s; // g^tau^2^a * g^tau*b * g^1^c = g^(a*tau^2 + b*tau + c) (As * requires pairing g^a * g^b is done using + operation)
+    }
+    val_commitment
+}
+
 fn main() {
     let circuit = fs::read_to_string("./plonk.circuit").unwrap().replace("\r\n",",");
     let circuit_end = circuit.chars().nth(circuit.len()-1).expect("Index out of bounds");
@@ -403,13 +519,79 @@ fn main() {
     let qo_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qo_eval);
     let qc_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qc_eval);
 
-    //Public inputs
-
-
+    //Public inputs (Scrapped)
+    
     // Evaluate how the deterministic oracle with fiat shamir transformation will work
 
-    // Linear combination
+    // Create domain separator with explicit field type  
+    macro_rules! bn254_field_op {  
+        ($op:ident, $base:expr, $count:expr, $label:expr) => {  
+            <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::$op($base, $count, $label)  
+        };  
+    }  
+      
+    let domsep = bn254_field_op!(challenge_scalars,  
+        bn254_field_op!(add_scalars,  
+            bn254_field_op!(challenge_scalars,  
+                bn254_field_op!(add_scalars,  
+                    DomainSeparator::new("bn254-protocol"),  
+                    2, "round1"  
+                ),  
+                1, "chal1"  
+            ),  
+            1, "round2"  
+        ),  
+        1, "chal2"  
+    );
+    let mut prover_state = domsep.to_prover_state();  
+      
+    // Round 1: Add BN254 Fr elements  
+    let round1_scalars = [Fr::from(42u64), Fr::from(123u64)];  
+    prover_state.add_scalars(&round1_scalars).expect("Fiat shamir error!! Scalar addition failed");  
+      
+    // Generate challenge 1  
+    let [challenge1]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");  
+      
+    // Round 2: Add more elements    
+    let round2_scalar = challenge1 * Fr::from(7u64);  
+    prover_state.add_scalars(&[round2_scalar]).expect("Fiat shamir error!! Scalar addition failed");  
+      
+    // Generate final challenge  
+    let [final_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
 
+    println!("Challenge1: {:?}",challenge1);
+    println!("Challenge final: {:?}",final_challenge);
+
+    // (Round 1)
+
+    // Sample 9 random field elements
+    let random_scalars_b:Vec<Fr> = sample_random_scalars(9); // [b1,..,b9]
+
+    // Compute vanishing polynomial ZH(x) over evaluation domain
+    let z_h_poly = compute_vanishing_poly(&evaluation_domain);
+
+    // Compute binding polynomial a(x),b(x) and c(x)
+    let a_poly:DensePolynomial<Fr> = get_dense_uv_poly(vec![random_scalars_b[0],random_scalars_b[1]]) * &z_h_poly + &wl_poly;
+    let b_poly:DensePolynomial<Fr> = get_dense_uv_poly(vec![random_scalars_b[2],random_scalars_b[3]]) * &z_h_poly + &wr_poly;
+    let c_poly:DensePolynomial<Fr> = get_dense_uv_poly(vec![random_scalars_b[4],random_scalars_b[5]]) * &z_h_poly + &wo_poly;
+
+    // Commit the bindig polynomials
+    // let g1 = G1::generator(); //Generator on the curve G1Projective
+    // let g2 = G2::generator(); //Generator on the curve G2projective
+
+    //Fetch SRS
+    let mut srs:Vec<G1> = load_srs_from_file("./kzg_srs.zkey").expect("Failed to load");
+
+    let mut a_commitment:G1 = compute_commitment(&srs,a_poly);
+    let mut b_commitment:G1 = compute_commitment(&srs,b_poly);
+    let mut c_commitment:G1 = compute_commitment(&srs,c_poly);
+
+    println!("a_commitment: {:?}",a_commitment);
+    println!("b_commitment: {:?}",b_commitment);
+    println!("c_commitment: {:?}",c_commitment);
+
+
+    // Round 2
 
 
     // Proof generation

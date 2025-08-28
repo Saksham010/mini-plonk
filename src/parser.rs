@@ -144,9 +144,9 @@ fn get_lro(c:&String,index:&usize,coeff_matrix:&mut Vec<Vec<String>>)->(String,S
     println!("Out : {:?}",o);
 
     // Parse coefficients 
-    let l_operand = fetch_operand_and_save_coeff(l,index,coeff_matrix,0);
+    let mut l_operand = fetch_operand_and_save_coeff(l,index,coeff_matrix,0);
     let mut r_operand = fetch_operand_and_save_coeff(r,index,coeff_matrix,1);
-    let o_operand = fetch_operand_and_save_coeff(o,index,coeff_matrix,2);
+    let mut o_operand = fetch_operand_and_save_coeff(o,index,coeff_matrix,2);
 
     // Convert sub op to add op and div op to mul
     let mut operator:char = op;
@@ -162,8 +162,26 @@ fn get_lro(c:&String,index:&usize,coeff_matrix:&mut Vec<Vec<String>>)->(String,S
 
         }else{panic!("Parser error: Not a valid coefficient in coeff matrix!!")} 
     }else if op == '/'{
+        // (TOCHANGE) Done
+
         operator = '*';
-        r_operand  = "{".to_string()+&r_operand+"}"; // {} => inverse sign
+        // r_operand  = "{".to_string()+&r_operand+"}"; // {} => inverse sign (CHANGED)
+
+        // (left,right,out,operator) [left/right=out]  => [out*right=left] (out,right,left,operator) (Swap operands/coeff)
+        let temp = o_operand;
+        o_operand = l_operand;
+        l_operand = temp;
+
+        // Divide original out(new: left) and right coeff by left coeff (new: out)
+
+        //Fetch left and right coefficient
+        let val_left = if &coeff_matrix[*index][0] == "" {"1".to_string()} else {coeff_matrix[*index][0].clone()};
+        let val_right = if &coeff_matrix[*index][1] == "" {"1".to_string()} else {coeff_matrix[*index][1].clone()};
+
+        //Update coefficient matrix : [2,3,1] => [1/2,3/2,1] as 2a/3b=r becomes (1/2)r*(3/2)b = a
+        coeff_matrix[*index][0] = "1/".to_string() + &val_left; //Update left
+        coeff_matrix[*index][1] = val_right.to_string()+"/"+&val_left;
+
     }
 
     (l_operand,r_operand,o_operand,operator)
@@ -410,7 +428,7 @@ fn main() {
         for operand in op_list {
             let mut invertible:bool = false;
             let mut _operand = operand.clone();
-            // Checks for invertible operator
+            // Checks for invertible operator (TO SKIP NO LONGER USE)
             if _operand.find("{").is_some() && _operand.find("}").is_some(){
                 //Invertible
                 invertible = true;
@@ -429,7 +447,7 @@ fn main() {
                 let mut num_fr = get_fr_from_i32(num);
 
                 // Convert to finite field element
-                if invertible{
+                if invertible{ //(TO SKIP NO LONGER USE)
                     //Invert 
                     num_fr = num_fr.inverse().expect("Inverse error: No inverse exists for zero");
                 }
@@ -454,9 +472,30 @@ fn main() {
                 // coeff_matrix_fr[cindex][_ci]=Fr::from(1u64); //Which is initialized by default
             }
             else{
-                let num:i32 = celement.parse().expect("Parsing error: Invalid number!!");
-                let num_fr = get_fr_from_i32(num);
-                coeff_matrix_fr[cindex][_ci] = num_fr;
+                //If coeff is divisive eg:1/2
+                let div_index_str = match celement.find("/"){
+                    Some(div_index) => div_index.to_string(),
+                    None => "-1".to_string()
+                };
+
+                let div_index:i32 = div_index_str.parse().expect("Parsing error: Invalid number!!");
+                println!("Div index: {:?}",div_index);
+                // If divisble
+                if div_index >= 0{
+                    let left_val = &celement[..div_index as usize];
+                    let right_val = &celement[(div_index+1) as usize..];
+                    let left_val_num:i32 = left_val.parse().expect("Parsing error: Invalid number!!");
+                    let right_val_num:i32 = right_val.parse().expect("Parsing error: Invalid number!!");
+                    let left_val_fr = get_fr_from_i32(left_val_num);
+                    let right_val_fr = get_fr_from_i32(right_val_num);
+                    let div_value_fr = left_val_fr/right_val_fr;
+                    coeff_matrix_fr[cindex][_ci] = div_value_fr;
+                }else{
+
+                    let num:i32 = celement.parse().expect("Parsing error: Invalid number!!");
+                    let num_fr = get_fr_from_i32(num);
+                    coeff_matrix_fr[cindex][_ci] = num_fr;
+                }
             }
 
         }

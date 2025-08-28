@@ -508,30 +508,39 @@ fn main() {
     // Wl | Wr | Wo | Qm | Ql | Qr | Qo | Qc
     let mut execution_trace:Vec<Vec<Fr>> = vec![vec![Fr::from(0u64);8];constraints.len()];
 
-    for (i_c, coeff_fr_list) in coeff_matrix_fr.iter().enumerate() {
-        for (i_w,witness_fr_list) in operand_val_list.iter().enumerate(){
-            // Same row
-            if i_c == i_w {
-                // Iterate over the row's columns
-                for (col_i, (coeff_fr, witness_fr)) in coeff_fr_list.iter().zip(witness_fr_list).enumerate(){
-                    execution_trace[i_c][col_i] = coeff_fr*witness_fr;
-                }
-                //Instantiate selector for the constraint
-                if operator_list[i_c] == '*'{
-                    //Multiplication gate
-                    execution_trace[i_c][3] = Fr::from(1u64); //Qm=1
-                    execution_trace[i_c][6] = -Fr::from(1u64); //Qo=-1
-                }else{
-                    //Addition gate
-                    execution_trace[i_c][4] = Fr::from(1u64); //Ql=1
-                    execution_trace[i_c][5] = Fr::from(1u64); //Qr=1
-                    execution_trace[i_c][6] = -Fr::from(1u64); //Qo=-1
-                }
+    // Fill execution trace
+    for (i, row) in coeff_matrix_fr.iter().enumerate() {
+        //Fetch coefficient and operands for a given gate
+        let left_coeff = coeff_matrix_fr[i][0];
+        let right_coeff = coeff_matrix_fr[i][1];
+        let left_witness = operand_val_list[i][0];
+        let right_witness = operand_val_list[i][1];
+        let out_witness = operand_val_list[i][2];
+        let operator = operator_list[i];
 
-                break; //Break inner loop
+        //Update execution trace
 
-            }
+        //Multiplication operation
+        if operator == '*'{
+
+            execution_trace[i][0] = left_witness; //Wl
+            execution_trace[i][1] = right_witness; //Wr
+            execution_trace[i][2] = out_witness; //Wo
+            execution_trace[i][3] = left_coeff*right_coeff; //Qm=1 or scaled eg: 2a*3b=r => 6(a*b)
+            execution_trace[i][6] = -Fr::from(1u64); //Qo=-1
+
+        }else if operator == '+'{
+            //Addition operation
+
+            execution_trace[i][0] = left_witness; //Wl
+            execution_trace[i][1] = right_witness; //Wr
+            execution_trace[i][2] = out_witness; //Wo
+            execution_trace[i][4] = left_coeff; //Ql=coeff
+            execution_trace[i][5] = right_coeff; //Qr=coeff
+            execution_trace[i][6] = -Fr::from(1u64); //Qo=-1
+
         }
+
     }
     println!("Execution trace: {:?}",execution_trace);
 

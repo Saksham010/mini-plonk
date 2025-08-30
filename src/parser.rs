@@ -3,7 +3,7 @@ use std::fs;
 use regex::Regex;
 use std::io::BufReader;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use ark_bn254::{Fr,FqConfig,G1Projective as G1, G2Projective as G2}; // Scalar field
 use ark_ff::fields::{Field,PrimeField};
 use ark_ff::{Fp,MontBackend,UniformRand};
@@ -229,8 +229,10 @@ fn get_evals(execution_trace:&Vec<Vec<Fr>>,col_index:usize)->Vec<Fr>{
 
 //Generate roots of unity
 fn generate_evaluation_domain(size:usize)->Vec<Fr>{
+    //(TODO Limit to the size of required domain)
     let domain = Radix2EvaluationDomain::<Fr>::new(size).expect("Evaluation domain generation failed!!");  
     let roots: Vec<Fr> = domain.elements().collect(); 
+    println!("Evaluation domain elements: {:?}",roots);
     roots
 }
 
@@ -375,6 +377,74 @@ fn compute_commitment(srs:&Vec<G1>,x_poly:DensePolynomial<Fr>)->G1{
         val_commitment = val_commitment + g_i_tau_s; // g^tau^2^a * g^tau*b * g^1^c = g^(a*tau^2 + b*tau + c) (As * requires pairing g^a * g^b is done using + operation)
     }
     val_commitment
+}
+
+// Get position of character from matrix 
+fn get_position_from_matrix(element:String,matrix:&Vec<Vec<String>>)->Vec<(usize,usize)>{
+    let mut index_pair_list:Vec<(usize,usize)> = Vec::new();
+
+    for (i,row) in matrix.iter().enumerate(){
+        for (j,col) in row.iter().enumerate(){
+            if *col == element{
+                index_pair_list.push((i,j));
+            }
+        }
+    }
+
+    index_pair_list
+}
+
+// Get position of character from matrix_fr
+fn get_position_from_matrix_fr(element:Fr,matrix:&Vec<Vec<Fr>>)->Vec<(usize,usize)>{
+    let mut index_pair_list:Vec<(usize,usize)> = Vec::new();
+
+    for (i,row) in matrix.iter().enumerate(){
+        for (j,col) in row.iter().enumerate(){
+            if *col == element{
+                index_pair_list.push((i,j));
+            }
+        }
+    }
+
+    index_pair_list
+}
+
+//Permutation function sigma(i) -> H' (Rotation of equivalence class)
+fn permutation_function(i:usize,gate_no:usize,operand_map:HashMap<String,HashSet<Fr>>,evaluation_domain_h_k1_k2:Vec<Fr>,position_matrix:Vec<Vec<Fr>>,operand_list:Vec<Vec<String>>)->Fr{
+    assert!(i<3*gate_no); //(w^0...k1w^0....k2w^0...k2w^n-1)
+
+    let w:Fr = evaluation_domain_h_k1_k2[i];
+    let indexpair_list:Vec<(usize,usize)> = get_position_from_matrix_fr(w,&position_matrix);
+    assert!(indexpair_list.len()==1);//Position matrix have unique w^i/k1w^i/k2w^i
+    
+    let (_i,_j):(usize,usize) = indexpair_list[0];
+
+    let operand = &operand_list[_i][_j];
+    println!("Operand of the map:{:?}",&operand);
+    let roots_unity_set:&HashSet<Fr> = operand_map.get(operand).expect("Permutation map error!! No permutation set for operand found.");
+    let set_len = roots_unity_set.len();
+    let roots_unity_list:Vec<&Fr> = roots_unity_set.iter().collect();
+    let mut permuted_w:Fr = Fr::from(0u64);
+    println!("Associated unpermuted ROU: {:?}",w);
+
+    // if set_len == 1{
+    //     return roots_unity_list[0];
+    // }
+    for (i,val) in roots_unity_list.iter().enumerate(){
+        if **val == w{
+            let permuted_index:usize = (i+1)%set_len; //Get the permuted index
+            permuted_w = *roots_unity_list[permuted_index];
+        }
+    }
+
+
+    println!("Permuted w: {:?}",permuted_w);
+
+    println!("Permutation set associated with index {:?}: {:?}",i,roots_unity_set);
+    println!("Permutation list associated with index {:?}: {:?}",i,roots_unity_list);
+
+    permuted_w
+
 }
 
 fn main() {
@@ -641,6 +711,58 @@ fn main() {
 
     // Round 2
 
+    //(Preprcessing section)
+    
+    // 2.1 Create cosets
+    let k1_k2:Vec<Fr> = sample_random_scalars(2); // [k1,k2]
+    let mut eval_domain_h:Vec<Fr> = evaluation_domain.clone(); // H
+    let eval_domain_h_k1:&Vec<Fr> = &evaluation_domain.iter().map(|w|{w*&k1_k2[0]}).collect(); // k1H
+    let eval_domain_h_k2:&Vec<Fr> = &evaluation_domain.iter().map(|w|{w*&k1_k2[1]}).collect(); // k2H
+    eval_domain_h.extend(eval_domain_h_k1.iter().clone());
+    eval_domain_h.extend(eval_domain_h_k2.iter().clone());
+    let evaluation_domain_h_k1_k2 = eval_domain_h; // H' = {H U k1H U k2H}
+
+    // 2.2 Create permutation function
+    // 2.2.a Create a matrix with LRO, with position values from the coset H' 
+    // L | R | O
+    let mut position_matrix:Vec<Vec<Fr>> = vec![vec![Fr::from(0u64);3];constraints.len()];
+    let mut eval_index = 0;
+    //Fill positionn matrix with value from cosets
+    for (i,row) in position_matrix.clone().iter().enumerate(){
+        for (j,col) in row.iter().enumerate(){
+            position_matrix[i][j] = evaluation_domain_h_k1_k2[eval_index];
+            eval_index = eval_index + 1;
+        }
+    } 
+
+    // 2.2.b Read circuit and add the position to a set, eg: a ->{w,k1w,k2w^2}
+    //Map of set of positions Eg: a -> {1,w^2}
+    let mut operand_map:HashMap<String,HashSet<Fr>> = HashMap::new();
+
+    for operands_gate in &operand_list{
+        for operand in operands_gate{
+            //Check if the operand has already been checked
+            if !operand_map.contains_key(operand) {
+                let index_list:Vec<(usize,usize)> = get_position_from_matrix(operand.to_string(),&operand_list);
+
+                //Extract positions
+                let mut position_set:HashSet<Fr> = HashSet::new();
+                for (i,j) in index_list {
+                    position_set.insert(position_matrix[i][j]);
+                }
+                
+                operand_map.insert(operand.to_string(),position_set);
+
+            }
+
+        }        
+    }
+    println!("Operand map: {:?}",operand_map);
+
+    permutation_function(3,constraints.len(),operand_map,evaluation_domain_h_k1_k2,position_matrix,operand_list);
+
+
+    // Create permutation polynomials
 
     // Proof generation
 

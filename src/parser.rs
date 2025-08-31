@@ -380,22 +380,7 @@ fn compute_commitment(srs:&Vec<G1>,x_poly:DensePolynomial<Fr>)->G1{
 }
 
 // Get position of character from matrix 
-fn get_position_from_matrix(element:String,matrix:&Vec<Vec<String>>)->Vec<(usize,usize)>{
-    let mut index_pair_list:Vec<(usize,usize)> = Vec::new();
-
-    for (i,row) in matrix.iter().enumerate(){
-        for (j,col) in row.iter().enumerate(){
-            if *col == element{
-                index_pair_list.push((i,j));
-            }
-        }
-    }
-
-    index_pair_list
-}
-
-// Get position of character from matrix_fr
-fn get_position_from_matrix_fr(element:Fr,matrix:&Vec<Vec<Fr>>)->Vec<(usize,usize)>{
+fn get_position_from_matrix<T:std::cmp::PartialEq>(element:T,matrix:&Vec<Vec<T>>)->Vec<(usize,usize)>{
     let mut index_pair_list:Vec<(usize,usize)> = Vec::new();
 
     for (i,row) in matrix.iter().enumerate(){
@@ -410,41 +395,28 @@ fn get_position_from_matrix_fr(element:Fr,matrix:&Vec<Vec<Fr>>)->Vec<(usize,usiz
 }
 
 //Permutation function sigma(i) -> H' (Rotation of equivalence class)
-fn permutation_function(i:usize,gate_no:usize,operand_map:HashMap<String,HashSet<Fr>>,evaluation_domain_h_k1_k2:Vec<Fr>,position_matrix:Vec<Vec<Fr>>,operand_list:Vec<Vec<String>>)->Fr{
+fn permutation_function(i:usize,gate_no:usize,operand_map:HashMap<String,Vec<Fr>>,evaluation_domain_h_k1_k2:Vec<Fr>,position_matrix:Vec<Vec<Fr>>,operand_list:Vec<Vec<String>>)->Fr{
     assert!(i<3*gate_no); //(w^0...k1w^0....k2w^0...k2w^n-1)
 
     let w:Fr = evaluation_domain_h_k1_k2[i];
-    let indexpair_list:Vec<(usize,usize)> = get_position_from_matrix_fr(w,&position_matrix);
+    let indexpair_list:Vec<(usize,usize)> = get_position_from_matrix(w,&position_matrix);
     assert!(indexpair_list.len()==1);//Position matrix have unique w^i/k1w^i/k2w^i
     
     let (_i,_j):(usize,usize) = indexpair_list[0];
 
     let operand = &operand_list[_i][_j];
-    println!("Operand of the map:{:?}",&operand);
-    let roots_unity_set:&HashSet<Fr> = operand_map.get(operand).expect("Permutation map error!! No permutation set for operand found.");
+    let roots_unity_set:&Vec<Fr> = operand_map.get(operand).expect("Permutation map error!! No permutation set for operand found.");
     let set_len = roots_unity_set.len();
-    let roots_unity_list:Vec<&Fr> = roots_unity_set.iter().collect();
     let mut permuted_w:Fr = Fr::from(0u64);
-    println!("Associated unpermuted ROU: {:?}",w);
 
-    // if set_len == 1{
-    //     return roots_unity_list[0];
-    // }
-    for (i,val) in roots_unity_list.iter().enumerate(){
-        if **val == w{
+    for (i,val) in roots_unity_set.iter().enumerate(){
+        if *val == w{
             let permuted_index:usize = (i+1)%set_len; //Get the permuted index
-            permuted_w = *roots_unity_list[permuted_index];
+            permuted_w = roots_unity_set[permuted_index];
         }
     }
 
-
-    println!("Permuted w: {:?}",permuted_w);
-
-    println!("Permutation set associated with index {:?}: {:?}",i,roots_unity_set);
-    println!("Permutation list associated with index {:?}: {:?}",i,roots_unity_list);
-
     permuted_w
-
 }
 
 fn main() {
@@ -734,10 +706,10 @@ fn main() {
             eval_index = eval_index + 1;
         }
     } 
-
+    println!("Position matrix: {:?}",&position_matrix);
     // 2.2.b Read circuit and add the position to a set, eg: a ->{w,k1w,k2w^2}
     //Map of set of positions Eg: a -> {1,w^2}
-    let mut operand_map:HashMap<String,HashSet<Fr>> = HashMap::new();
+    let mut operand_map:HashMap<String,Vec<Fr>> = HashMap::new();
 
     for operands_gate in &operand_list{
         for operand in operands_gate{
@@ -746,9 +718,9 @@ fn main() {
                 let index_list:Vec<(usize,usize)> = get_position_from_matrix(operand.to_string(),&operand_list);
 
                 //Extract positions
-                let mut position_set:HashSet<Fr> = HashSet::new();
+                let mut position_set:Vec<Fr> = Vec::new();
                 for (i,j) in index_list {
-                    position_set.insert(position_matrix[i][j]);
+                    position_set.push(position_matrix[i][j]);
                 }
                 
                 operand_map.insert(operand.to_string(),position_set);
@@ -759,7 +731,7 @@ fn main() {
     }
     println!("Operand map: {:?}",operand_map);
 
-    permutation_function(3,constraints.len(),operand_map,evaluation_domain_h_k1_k2,position_matrix,operand_list);
+    let permuted_root_unity:Fr = permutation_function(1,constraints.len(),operand_map,evaluation_domain_h_k1_k2,position_matrix,operand_list);
 
 
     // Create permutation polynomials

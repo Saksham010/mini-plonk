@@ -395,7 +395,7 @@ fn get_position_from_matrix<T:std::cmp::PartialEq>(element:T,matrix:&Vec<Vec<T>>
 }
 
 //Permutation function sigma(i) -> H' (Rotation of equivalence class)
-fn permutation_function(i:usize,gate_no:usize,operand_map:HashMap<String,Vec<Fr>>,evaluation_domain_h_k1_k2:Vec<Fr>,position_matrix:Vec<Vec<Fr>>,operand_list:Vec<Vec<String>>)->Fr{
+fn permutation_function(i:usize,gate_no:usize,operand_map:&HashMap<String,Vec<Fr>>,evaluation_domain_h_k1_k2:&Vec<Fr>,position_matrix:&Vec<Vec<Fr>>,operand_list:&Vec<Vec<String>>)->Fr{
     assert!(i<3*gate_no); //(w^0...k1w^0....k2w^0...k2w^n-1)
 
     let w:Fr = evaluation_domain_h_k1_k2[i];
@@ -416,6 +416,10 @@ fn permutation_function(i:usize,gate_no:usize,operand_map:HashMap<String,Vec<Fr>
         }
     }
 
+    // println!("Unpermuted w: {:?}",w);
+    // println!("Permuted w: {:?}",&permuted_w);
+    // println!("Operand: {:?}",operand);
+    // println!("ROU SET : {:?}",roots_unity_set);
     permuted_w
 }
 
@@ -698,13 +702,12 @@ fn main() {
     // 2.2.a Create a matrix with LRO, with position values from the coset H' 
     // L | R | O
     let mut position_matrix:Vec<Vec<Fr>> = vec![vec![Fr::from(0u64);3];constraints.len()];
-    let mut eval_index = 0;
-    //Fill positionn matrix with value from cosets
+    //Fill positionn matrix with value from cosets      w^0 | k1*w^0 | k2*w^0
+    let circuit_size = constraints.len(); // n
     for (i,row) in position_matrix.clone().iter().enumerate(){
-        for (j,col) in row.iter().enumerate(){
-            position_matrix[i][j] = evaluation_domain_h_k1_k2[eval_index];
-            eval_index = eval_index + 1;
-        }
+        position_matrix[i][0] = evaluation_domain_h_k1_k2[i];
+        position_matrix[i][1] = evaluation_domain_h_k1_k2[i+circuit_size];
+        position_matrix[i][2] = evaluation_domain_h_k1_k2[i+2*circuit_size];
     } 
     println!("Position matrix: {:?}",&position_matrix);
     // 2.2.b Read circuit and add the position to a set, eg: a ->{w,k1w,k2w^2}
@@ -731,10 +734,29 @@ fn main() {
     }
     println!("Operand map: {:?}",operand_map);
 
-    let permuted_root_unity:Fr = permutation_function(1,constraints.len(),operand_map,evaluation_domain_h_k1_k2,position_matrix,operand_list);
-
-
     // Create permutation polynomials
+    let mut permuted_root_unity_y:Vec<Fr> = Vec::new();
+    let mut permuted_root_unity_k1_y:Vec<Fr> = Vec::new();
+    let mut permuted_root_unity_k2_y:Vec<Fr> = Vec::new();
+
+    for i in 0..circuit_size as i32{ //0-(n-1)
+
+        let permuted_root_unity:Fr = permutation_function(i as usize,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list);
+        let permuted_root_unity_k1:Fr = permutation_function(i as usize +circuit_size,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list);
+        let permuted_root_unity_k2:Fr = permutation_function(i as usize +circuit_size,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list);
+
+        permuted_root_unity_y.push(permuted_root_unity);
+        permuted_root_unity_k1_y.push(permuted_root_unity_k1);
+        permuted_root_unity_k2_y.push(permuted_root_unity_k2);
+    }
+
+    let permutation_poly_sigma_1:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_y);
+    let permutation_poly_sigma_2:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_k1_y);
+    let permutation_poly_sigma_3:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_k2_y);
+
+    println!("Sigma1 :{:?}",permutation_poly_sigma_1);
+    println!("Sigma2 :{:?}",permutation_poly_sigma_2);
+    println!("Sigma3 :{:?}",permutation_poly_sigma_3);
 
     // Proof generation
 

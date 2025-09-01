@@ -790,7 +790,7 @@ fn main() {
     let [beta,gamma]: [Fr; 2] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");  
 
     //Compute permutation polynomial accumulations
-    let mut permutation_poly_y:Vec<Fr> = Vec::new(); // [evals for interpolating permutation poly]
+    let mut permutation_poly_y:Vec<Fr> = vec![Fr::from(1)]; // Set z(w^0) = 1 [evals for interpolating permutation poly]
     for i in 1..circuit_size{
         let mut cumulative_product:Fr = Fr::from(1);
         for j in 1..i{
@@ -809,14 +809,20 @@ fn main() {
         permutation_poly_y.push(cumulative_product);
     }
      
-    let z_poly_half:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain[1..].to_vec(),permutation_poly_y);
-    let l_basis_0:DensePolynomial<Fr> = compute_lagrange_basis(0,&evaluation_domain);
-    // (b7x^2+ b8x+ b9)Zh(x) + Lo(x) + z'(x)
-    let z_permutation_poly = DensePolynomial::from_coefficients_vec(vec![Fr::from(random_scalars_b[8]),Fr::from(random_scalars_b[7]),Fr::from(random_scalars_b[6])]) * z_h_poly + l_basis_0 + z_poly_half;
-    let z_commitment:G1 = compute_commitment(&srs,z_permutation_poly);
-    
+    //Evaluation domain 
+    let z_poly_half:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permutation_poly_y); // (w^0,1),(w,y1)...
+    // let l_basis_0:DensePolynomial<Fr> = compute_lagrange_basis(0,&evaluation_domain);
+    // (b7x^2+ b8x+ b9)Zh(x) + z'(x)
+    let z_permutation_poly = DensePolynomial::from_coefficients_vec(vec![Fr::from(random_scalars_b[8]),Fr::from(random_scalars_b[7]),Fr::from(random_scalars_b[6])]) * z_h_poly + z_poly_half;
+    let z_commitment:G1 = compute_commitment(&srs,z_permutation_poly.clone());
+
     println!("Permutation polynomial: {:?}",z_permutation_poly);
     println!("Z_commitment: {:?}",z_commitment);
+
+    println!("Permutation polynomial eval: {:?}",z_permutation_poly.evaluate(&evaluation_domain[0]));
+
+
+    // Round 3
 
 
 }

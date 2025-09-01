@@ -11,6 +11,7 @@ use rand::thread_rng;
 
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain, univariate::DensePolynomial}; 
 use ark_poly::DenseUVPolynomial;
+use ark_poly::Polynomial;
 
 use spongefish::codecs::arkworks_algebra::*;  
 use spongefish::{DomainSeparator,DefaultHash};
@@ -423,6 +424,33 @@ fn permutation_function(i:usize,gate_no:usize,operand_map:&HashMap<String,Vec<Fr
     permuted_w
 }
 
+//Get witness (L,R,O) from execution trace
+fn get_witness_from_trace(pos:usize,index:usize,execution_trace:&Vec<Vec<Fr>>)->Fr{
+    assert!(pos<=3); //left,right,out
+    let mut witness:Fr = Fr::from(0);
+    for (i,row) in execution_trace.iter().enumerate(){
+        if i == index{
+            witness = row[pos];
+        }
+    }
+    witness
+}
+
+//Compute lagrange basis Li(x) 
+fn compute_lagrange_basis(i:usize,evaluation_domain:&Vec<Fr>)->DensePolynomial<Fr>{
+
+    let w_i = evaluation_domain[i]; //w_i
+    let mut lagrange_basis_i:DensePolynomial<Fr> = DensePolynomial::from_coefficients_vec(vec![Fr::from(1)]); //1
+    for k in evaluation_domain{
+        if *k != w_i{
+            let ratio:DensePolynomial<Fr> = (DensePolynomial::from_coefficients_vec(vec![Fr::from(0),Fr::from(1)])-DensePolynomial::from_coefficients_vec(vec![*k]))/DensePolynomial::from_coefficients_vec(vec![(w_i - *k)]); // (x-k)/(wi-k)
+            lagrange_basis_i = lagrange_basis_i * ratio;
+        }
+    }
+    lagrange_basis_i
+
+} 
+
 fn main() {
     let circuit = fs::read_to_string("./plonk.circuit").unwrap().replace("\r\n",",");
     let circuit_end = circuit.chars().nth(circuit.len()-1).expect("Index out of bounds");
@@ -609,53 +637,13 @@ fn main() {
     let wr_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,wr_eval);
     let wo_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,wo_eval);
     let qm_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qm_eval);
+    let ql_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,ql_eval);
     let qr_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qr_eval);
     let qo_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qo_eval);
     let qc_poly:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,qc_eval);
 
     //Public inputs (Scrapped)
     
-    // Evaluate how the deterministic oracle with fiat shamir transformation will work
-
-    // Create domain separator with explicit field type  
-    macro_rules! bn254_field_op {  
-        ($op:ident, $base:expr, $count:expr, $label:expr) => {  
-            <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::$op($base, $count, $label)  
-        };  
-    }  
-      
-    let domsep = bn254_field_op!(challenge_scalars,  
-        bn254_field_op!(add_scalars,  
-            bn254_field_op!(challenge_scalars,  
-                bn254_field_op!(add_scalars,  
-                    DomainSeparator::new("bn254-protocol"),  
-                    2, "round1"  
-                ),  
-                1, "chal1"  
-            ),  
-            1, "round2"  
-        ),  
-        1, "chal2"  
-    );
-    let mut prover_state = domsep.to_prover_state();  
-      
-    // Round 1: Add BN254 Fr elements  
-    let round1_scalars = [Fr::from(42u64), Fr::from(123u64)];  
-    prover_state.add_scalars(&round1_scalars).expect("Fiat shamir error!! Scalar addition failed");  
-      
-    // Generate challenge 1  
-    let [challenge1]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");  
-      
-    // Round 2: Add more elements    
-    let round2_scalar = challenge1 * Fr::from(7u64);  
-    prover_state.add_scalars(&[round2_scalar]).expect("Fiat shamir error!! Scalar addition failed");  
-      
-    // Generate final challenge  
-    let [final_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
-
-    println!("Challenge1: {:?}",challenge1);
-    println!("Challenge final: {:?}",final_challenge);
-
     // (Round 1)
 
     // Sample 9 random field elements
@@ -743,7 +731,7 @@ fn main() {
 
         let permuted_root_unity:Fr = permutation_function(i as usize,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list);
         let permuted_root_unity_k1:Fr = permutation_function(i as usize +circuit_size,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list);
-        let permuted_root_unity_k2:Fr = permutation_function(i as usize +circuit_size,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list);
+        let permuted_root_unity_k2:Fr = permutation_function(i as usize +2*circuit_size,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list);
 
         permuted_root_unity_y.push(permuted_root_unity);
         permuted_root_unity_k1_y.push(permuted_root_unity_k1);
@@ -758,7 +746,77 @@ fn main() {
     println!("Sigma2 :{:?}",permutation_poly_sigma_2);
     println!("Sigma3 :{:?}",permutation_poly_sigma_3);
 
-    // Proof generation
+
+    //Preprocessed transcript
+    let mut transcript_final:Vec<Fr> = Vec::new();
+    let transcript_0 = [
+        Fr::from(circuit_size as u64), //n
+        k1_k2[0], // k1
+        k1_k2[1], // k2
+        permutation_function(circuit_size as usize,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list) // Sigma(n)
+    ];
+    transcript_final.extend(&transcript_0);
+    transcript_final.extend(qm_poly.coeffs()); //qm(x)
+    transcript_final.extend(ql_poly.coeffs()); //ql(x)
+    transcript_final.extend(qr_poly.coeffs()); //qr(x)
+    transcript_final.extend(qo_poly.coeffs()); //qo(x)
+    transcript_final.extend(qc_poly.coeffs()); //qc(x)
+    transcript_final.extend(permutation_poly_sigma_1.coeffs()); //Sigma1(x)
+    transcript_final.extend(permutation_poly_sigma_2.coeffs()); //Sigma2(x)
+    transcript_final.extend(permutation_poly_sigma_3.coeffs()); //Sigma3(x)
+
+    // Evaluate how the deterministic oracle with fiat shamir transformation will work
+
+    let domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::add_scalars(
+        DomainSeparator::<DefaultHash>::new("bn254-plonk"),
+        transcript_final.len(),
+        "full_transcript",
+    );
+
+    let domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::challenge_scalars(
+        domsep,
+        2,               // number of scalars for the challenge
+        "challenge 1",         // label for the challenge
+    );
+
+    let mut prover_state = domsep.to_prover_state();
+  
+    // Add transcript
+    prover_state.add_scalars(&transcript_final).expect("Fiat shamir error!! Scalar addition failed");  
+    
+
+    //Round 2 (Generate challenges)  
+    // Generate challenge for beta and gamma
+    let [beta,gamma]: [Fr; 2] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");  
+
+    //Compute permutation polynomial accumulations
+    let mut permutation_poly_y:Vec<Fr> = Vec::new(); // [evals for interpolating permutation poly]
+    for i in 1..circuit_size{
+        let mut cumulative_product:Fr = Fr::from(1);
+        for j in 1..i{
+                        // (wi + beta*w^i+ gamma) * (wn+i + beta*k1w^i+ gamma) * (w2n+i + beta*k2w^i+ gamma)
+            let f_i:Fr = (get_witness_from_trace(0,j,&execution_trace) + beta*evaluation_domain_h_k1_k2[j] + gamma)
+                         *(get_witness_from_trace(1,j,&execution_trace) + beta*evaluation_domain_h_k1_k2[j+circuit_size] + gamma)
+                         *(get_witness_from_trace(2,j,&execution_trace) + beta*evaluation_domain_h_k1_k2[j+2*circuit_size] + gamma); 
+
+            let g_i:Fr = (get_witness_from_trace(0,j,&execution_trace) + beta*permutation_function(j as usize,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list) + gamma)
+                         *(get_witness_from_trace(1,j,&execution_trace) + beta*permutation_function(j as usize + circuit_size,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list) + gamma)
+                         *(get_witness_from_trace(2,j,&execution_trace) + beta*permutation_function(j as usize + 2*circuit_size,circuit_size,&operand_map,&evaluation_domain_h_k1_k2,&position_matrix,&operand_list) + gamma); 
+
+            let div:Fr = f_i/g_i;
+            cumulative_product = cumulative_product * div;
+        }
+        permutation_poly_y.push(cumulative_product);
+    }
+     
+    let z_poly_half:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain[1..].to_vec(),permutation_poly_y);
+    let l_basis_0:DensePolynomial<Fr> = compute_lagrange_basis(0,&evaluation_domain);
+    // (b7x^2+ b8x+ b9)Zh(x) + Lo(x) + z'(x)
+    let z_permutation_poly = DensePolynomial::from_coefficients_vec(vec![Fr::from(random_scalars_b[8]),Fr::from(random_scalars_b[7]),Fr::from(random_scalars_b[6])]) * z_h_poly + l_basis_0 + z_poly_half;
+    let z_commitment:G1 = compute_commitment(&srs,z_permutation_poly);
+    
+    println!("Permutation polynomial: {:?}",z_permutation_poly);
+    println!("Z_commitment: {:?}",z_commitment);
 
 
 }

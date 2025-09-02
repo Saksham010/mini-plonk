@@ -37,7 +37,8 @@ fn compute_powers_of_tau(tau:Fr,n:i32)-> Fr{
 //Compute SRS (Structured reference string)
 fn compute_srs(generator:G1,tau:Fr,circuit_size:i32) -> Vec<G1>{
     let mut elements:Vec<G1> = Vec::new();
-    for i in 0..circuit_size{
+    // {w^0,...,w^(n+5)}
+    for i in 0..=circuit_size+5{
         let ptau:Fr = compute_powers_of_tau(tau,i);
         println!("PTAU: {:?}",&ptau);
         println!("G_PTAU: {:?}",generator*ptau);

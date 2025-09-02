@@ -451,6 +451,64 @@ fn compute_lagrange_basis(i:usize,evaluation_domain:&Vec<Fr>)->DensePolynomial<F
 
 } 
 
+//Get polynomial from Fr
+fn get_poly_from_fr(val:Fr)->DensePolynomial<Fr>{
+    DensePolynomial::from_coefficients_vec(vec![val])
+}
+
+// z(wx)
+fn compute_shifted_polynomial(poly_z: &DensePolynomial<Fr>,w: &Fr) -> DensePolynomial<Fr> {
+    // Get the coefficients of z(x)
+    let z_coeffs = poly_z.coeffs();
+
+    // Create a vector to store the new coefficients
+    let mut zw_coeffs = Vec::with_capacity(z_coeffs.len());
+
+    // Initialize w_power to w^0 = 1
+    let mut w_power = Fr::from(1);
+
+    // Iterate through the coefficients of z(x)
+    for coeff in z_coeffs {
+        // The new coefficient for the term x^i is z_i * w^i
+        let new_coeff = coeff * &w_power;
+        zw_coeffs.push(new_coeff);
+
+        // Update w_power for the next iteration (w^(i+1))
+        w_power *= w;
+    }
+
+    // Create and return the new DensePolynomial
+    DensePolynomial::from_coefficients_vec(zw_coeffs)
+}
+
+// x^n for any n
+fn get_x_n_poly(n:usize)->DensePolynomial<Fr>{
+
+    let mut coefficients:Vec<Fr> = Vec::new();
+    for i in 0..=n{
+        if i == n{
+            coefficients.push(Fr::from(1));
+        }else{
+            coefficients.push(Fr::from(0));
+        }
+    }
+    DensePolynomial::from_coefficients_vec(coefficients)
+}
+
+// Takes a polynomial's coeffecient and only keeps the range values
+fn split_polynomial(poly:&DensePolynomial<Fr>,start:usize,end:usize)->DensePolynomial<Fr>{
+    let mut coeffs:Vec<Fr> = poly.coeffs().to_vec();
+    for i in 0..coeffs.len(){
+        if i >= start && i <= end{
+            continue;
+        }else{
+            coeffs[i] = Fr::from(0);
+        }
+
+    }
+    DensePolynomial::from_coefficients_vec(coeffs)
+}
+
 fn main() {
     let circuit = fs::read_to_string("./plonk.circuit").unwrap().replace("\r\n",",");
     let circuit_end = circuit.chars().nth(circuit.len()-1).expect("Index out of bounds");
@@ -664,9 +722,9 @@ fn main() {
     //Fetch SRS
     let mut srs:Vec<G1> = load_srs_from_file("./kzg_srs.zkey").expect("Failed to load");
 
-    let mut a_commitment:G1 = compute_commitment(&srs,a_poly);
-    let mut b_commitment:G1 = compute_commitment(&srs,b_poly);
-    let mut c_commitment:G1 = compute_commitment(&srs,c_poly);
+    let mut a_commitment:G1 = compute_commitment(&srs,a_poly.clone());
+    let mut b_commitment:G1 = compute_commitment(&srs,b_poly.clone());
+    let mut c_commitment:G1 = compute_commitment(&srs,c_poly.clone());
 
     println!("a_commitment: {:?}",a_commitment);
     println!("b_commitment: {:?}",b_commitment);
@@ -767,18 +825,41 @@ fn main() {
 
     // Evaluate how the deterministic oracle with fiat shamir transformation will work
 
-    let domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::add_scalars(
+    let mut domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::add_scalars(
         DomainSeparator::<DefaultHash>::new("bn254-plonk"),
         transcript_final.len(),
         "full_transcript",
     );
 
-    let domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::challenge_scalars(
+    domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::challenge_scalars(
         domsep,
         2,               // number of scalars for the challenge
-        "challenge 1",         // label for the challenge
+        "Round 1 challenge",         // label for the challenge
     );
 
+    domsep = <DomainSeparator<DefaultHash> as GroupDomainSeparator<G1>>::add_points(
+        domsep,
+        1,
+        "Round 2",
+    );
+
+    domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::challenge_scalars(
+        domsep,
+        1,               // number of scalars for the challenge
+        "Round 3 challenge",         // label for the challenge
+    );
+
+    domsep = <DomainSeparator<DefaultHash> as GroupDomainSeparator<G1>>::add_points(
+        domsep,
+        3,
+        "Round 3",
+    );
+
+    domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::challenge_scalars(
+        domsep,
+        1,               // number of scalars for the challenge
+        "Round 4 challenge",         // label for the challenge
+    );
     let mut prover_state = domsep.to_prover_state();
   
     // Add transcript
@@ -811,18 +892,61 @@ fn main() {
      
     //Evaluation domain 
     let z_poly_half:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permutation_poly_y); // (w^0,1),(w,y1)...
-    // let l_basis_0:DensePolynomial<Fr> = compute_lagrange_basis(0,&evaluation_domain);
+    let l_basis_0:DensePolynomial<Fr> = compute_lagrange_basis(0,&evaluation_domain);
     // (b7x^2+ b8x+ b9)Zh(x) + z'(x)
-    let z_permutation_poly = DensePolynomial::from_coefficients_vec(vec![Fr::from(random_scalars_b[8]),Fr::from(random_scalars_b[7]),Fr::from(random_scalars_b[6])]) * z_h_poly + z_poly_half;
+    let z_permutation_poly = DensePolynomial::from_coefficients_vec(vec![Fr::from(random_scalars_b[8]),Fr::from(random_scalars_b[7]),Fr::from(random_scalars_b[6])]) * &z_h_poly + z_poly_half;
     let z_commitment:G1 = compute_commitment(&srs,z_permutation_poly.clone());
 
-    println!("Permutation polynomial: {:?}",z_permutation_poly);
-    println!("Z_commitment: {:?}",z_commitment);
-
-    println!("Permutation polynomial eval: {:?}",z_permutation_poly.evaluate(&evaluation_domain[0]));
+    //Push commitment to transcript
+    prover_state.add_points(&[z_commitment]).expect("Fiat shamir error!! Group element addition failed");  
 
 
     // Round 3
+    //(Generate challenge for quotient polynomial)
+    let [alpha]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");  
 
+    let x_poly:DensePolynomial<Fr> = DensePolynomial::from_coefficients_vec(vec![Fr::from(0), Fr::from(1)]); // x
+    let f_x:DensePolynomial<Fr> = (&a_poly+&x_poly*beta+get_poly_from_fr(gamma))* (&b_poly+&x_poly*(k1_k2[0]*beta)+get_poly_from_fr(gamma))* (&c_poly+&x_poly*(k1_k2[1]*beta)+get_poly_from_fr(gamma));
+    let g_x:DensePolynomial<Fr> = (&a_poly+permutation_poly_sigma_1*beta+get_poly_from_fr(gamma))* (&b_poly+permutation_poly_sigma_2*beta+get_poly_from_fr(gamma))* (&c_poly+permutation_poly_sigma_3*beta+get_poly_from_fr(gamma));
+    let z_permutation_poly_wx:DensePolynomial<Fr> = compute_shifted_polynomial(&z_permutation_poly,&evaluation_domain[1]); // z(wx)
+
+    //Compute random scalar for this round
+    let random_scalars_r3:Vec<Fr> = sample_random_scalars(2); // b10,b11
+
+    // Compute t1(x),t2(x),t3(x)
+    let t_one_poly:DensePolynomial<Fr> = (&a_poly*&ql_poly + &b_poly*&qr_poly + &c_poly*&qo_poly + &a_poly*&b_poly*&qm_poly + &qc_poly)/&z_h_poly;
+    let t_two_poly:DensePolynomial<Fr> = ((&f_x * &z_permutation_poly) - (&g_x * &z_permutation_poly_wx))/&z_h_poly;
+    let t_three_poly:DensePolynomial<Fr> = ((&z_permutation_poly - DensePolynomial::from_coefficients_vec(vec![Fr::from(1)]))*&l_basis_0)/&z_h_poly;
+    let t_quotient_poly:DensePolynomial<Fr> = &t_one_poly + &t_two_poly*alpha + &t_three_poly*alpha*alpha;
+
+    // Split t(x) into tlow (n-1) , thigh (n-1), tmid (n+5)
+
+    // Compute polynomials
+    let x_n_poly:DensePolynomial<Fr> = get_x_n_poly(circuit_size); // x^n
+    let x_2n_poly:DensePolynomial<Fr> = get_x_n_poly(2*circuit_size);// x^2n
+
+    let t_low_poly_prime:DensePolynomial<Fr> = split_polynomial(&t_quotient_poly,0,circuit_size-1);
+    let t_mid_poly_prime:DensePolynomial<Fr> = (split_polynomial(&t_quotient_poly,circuit_size,2*circuit_size-1))/&x_n_poly;
+    let t_high_poly_prime:DensePolynomial<Fr> = (split_polynomial(&t_quotient_poly,2*circuit_size,3*circuit_size+5))/&x_2n_poly;
+
+    //Compute final polynomial
+    let t_quotient_poly_final:DensePolynomial<Fr> = &t_low_poly_prime + &x_n_poly*&t_mid_poly_prime + &x_2n_poly*&t_high_poly_prime;
+
+    //Get random scalars
+    let b10:Fr = random_scalars_r3[0];
+    let b11:Fr = random_scalars_r3[1];
+
+    //Divide mid and high to get lower degrees for commitment and commit scalars
+    let t_low_poly = &t_low_poly_prime + &x_n_poly*b10; //t'low(x) + x^n*b10 
+    let t_mid_poly = &t_mid_poly_prime - get_poly_from_fr(b10) + &x_n_poly*b11; // t'mid(x) - b10 + x^n *b11
+    let t_high_poly = &t_high_poly_prime - get_poly_from_fr(b11); // t'high(x) - b11
+
+    //Compute commitment
+    let t_low_commitment:G1 = compute_commitment(&srs,t_low_poly);
+    let t_mid_commitment:G1 = compute_commitment(&srs,t_mid_poly);
+    let t_high_commitment:G1 = compute_commitment(&srs,t_high_poly);
+
+    //Add commitment to fiat shamir state
+    prover_state.add_points(&[t_low_commitment,t_mid_commitment,t_high_commitment]).expect("Fiat shamir error!! Group element addition failed");  
 
 }

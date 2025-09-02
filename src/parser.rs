@@ -860,6 +860,20 @@ fn main() {
         1,               // number of scalars for the challenge
         "Round 4 challenge",         // label for the challenge
     );
+
+    domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::add_scalars(
+        domsep,
+        6,
+        "Round 4",
+    );
+
+    domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::challenge_scalars(
+        domsep,
+        1,               // number of scalars for the challenge
+        "Round 4 challenge",         // label for the challenge
+    );
+
+
     let mut prover_state = domsep.to_prover_state();
   
     // Add transcript
@@ -907,7 +921,7 @@ fn main() {
 
     let x_poly:DensePolynomial<Fr> = DensePolynomial::from_coefficients_vec(vec![Fr::from(0), Fr::from(1)]); // x
     let f_x:DensePolynomial<Fr> = (&a_poly+&x_poly*beta+get_poly_from_fr(gamma))* (&b_poly+&x_poly*(k1_k2[0]*beta)+get_poly_from_fr(gamma))* (&c_poly+&x_poly*(k1_k2[1]*beta)+get_poly_from_fr(gamma));
-    let g_x:DensePolynomial<Fr> = (&a_poly+permutation_poly_sigma_1*beta+get_poly_from_fr(gamma))* (&b_poly+permutation_poly_sigma_2*beta+get_poly_from_fr(gamma))* (&c_poly+permutation_poly_sigma_3*beta+get_poly_from_fr(gamma));
+    let g_x:DensePolynomial<Fr> = (&a_poly+&permutation_poly_sigma_1*beta+get_poly_from_fr(gamma))* (&b_poly+&permutation_poly_sigma_2*beta+get_poly_from_fr(gamma))* (&c_poly+&permutation_poly_sigma_3*beta+get_poly_from_fr(gamma));
     let z_permutation_poly_wx:DensePolynomial<Fr> = compute_shifted_polynomial(&z_permutation_poly,&evaluation_domain[1]); // z(wx)
 
     //Compute random scalar for this round
@@ -949,4 +963,25 @@ fn main() {
     //Add commitment to fiat shamir state
     prover_state.add_points(&[t_low_commitment,t_mid_commitment,t_high_commitment]).expect("Fiat shamir error!! Group element addition failed");  
 
+
+    // (ROUND 4)
+    // Get the challenge
+    let [z_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
+
+    //Compute openings
+    let a_opening:Fr = a_poly.evaluate(&z_challenge);
+    let b_opening:Fr = b_poly.evaluate(&z_challenge);
+    let c_opening:Fr = c_poly.evaluate(&z_challenge);
+    let z_w_opening:Fr = z_permutation_poly_wx.evaluate(&z_challenge);
+    let sigma_1_opening:Fr = permutation_poly_sigma_1.evaluate(&z_challenge);
+    let sigma_2_opening:Fr = permutation_poly_sigma_2.evaluate(&z_challenge);
+
+    //Add commitment to fiat shamir state
+    prover_state.add_scalars(&[a_opening,b_opening,c_opening,z_w_opening,sigma_1_opening,sigma_2_opening]).expect("Fiat shamir error!! Group element addition failed");  
+
+    // (Round 5)
+    // Get the challenge
+    let [v_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
+
 }
+

@@ -515,6 +515,26 @@ fn split_polynomial(poly:&DensePolynomial<Fr>,start:usize,end:usize)->DensePolyn
     DensePolynomial::from_coefficients_vec(coeffs)
 }
 
+// Get G1 element from ProofElement 
+fn get_g1_element(element:&ProofElement)->G1{
+    let commitment = if let ProofElement::Group(g1_element) = element {
+        g1_element.clone()
+    }else {
+        panic!("Expected a G1 element");
+    };
+    commitment
+}
+
+// Get Fr element from ProofElement 
+fn get_fr_element(element:&ProofElement)->Fr{
+    let opening = if let ProofElement::Field(fr_element) = element {
+        fr_element.clone()
+    }else {
+        panic!("Expected a Fr element");
+    };
+    opening
+}
+
 fn main() {
     let circuit = fs::read_to_string("./plonk.circuit").unwrap().replace("\r\n",",");
     let circuit_end = circuit.chars().nth(circuit.len()-1).expect("Index out of bounds");
@@ -894,6 +914,18 @@ fn main() {
         "Round 4 challenge",         // label for the challenge
     );
 
+    domsep = <DomainSeparator<DefaultHash> as GroupDomainSeparator<G1>>::add_points(
+        domsep,
+        9,
+        "Round 5",
+    );
+
+    domsep = <DomainSeparator<DefaultHash> as FieldDomainSeparator<Fr>>::challenge_scalars(
+        domsep,
+        1,               // number of scalars for the challenge
+        "Verifier challenge",         // label for the challenge
+    );
+
 
     let mut prover_state = domsep.to_prover_state();
   
@@ -1056,6 +1088,73 @@ fn main() {
     ];
     println!("Proof:{:?}",proof);
 
+    // Add proof for fiat shamir
+    prover_state.add_points(&[a_commitment,b_commitment,c_commitment,z_commitment,t_low_commitment,t_mid_commitment,t_high_commitment,w_opening_z_commitment,w_opening_zw_commitment]).expect("Fiat shamir error!! Group element addition failed");  
+
+    //Verifier
+
+    //1. Validate proof elements
+    for (i,element) in proof.iter().enumerate(){
+        match *element { 
+            ProofElement::Group(G1) => {if i >8 {panic!("Invalid proof!!: Proof has more than 9 commitment");}},
+            ProofElement::Field(Fr) => {if i <= 8 {panic!("Invalid proof!!: Parsing proof failed");}},
+            _ => {panic!("Invalid proof!!: Cannot parse the proof")}
+        }
+
+    }
+
+    //Retrieve proof elements
+    let a_commitment_:G1 = get_g1_element(&proof[0]); 
+    let b_commitment_:G1 = get_g1_element(&proof[1]); 
+    let c_commitment_:G1 = get_g1_element(&proof[2]); 
+    let z_commitment_:G1 = get_g1_element(&proof[3]); 
+    let t_low_commitment_:G1 = get_g1_element(&proof[4]); 
+    let t_mid_commitment_:G1 = get_g1_element(&proof[5]); 
+    let t_high_commitment_:G1 = get_g1_element(&proof[6]); 
+    let w_opening_z_commitment_:G1 = get_g1_element(&proof[7]); 
+    let w_opening_zw_commitment_:G1 = get_g1_element(&proof[8]);
+
+    let a_opening_:Fr = get_fr_element(&proof[9]);
+    let b_opening_:Fr = get_fr_element(&proof[10]);
+    let c_opening_:Fr = get_fr_element(&proof[11]);
+    let z_w_opening_:Fr = get_fr_element(&proof[12]);
+    let sigma_1_opening_:Fr = get_fr_element(&proof[13]);
+    let sigma_2_opening_:Fr = get_fr_element(&proof[14]);
+
+    //Compute necessary commitments
+    let qm_commitment_:G1 = compute_commitment(&srs,qm_poly);
+    let ql_commitment_:G1 = compute_commitment(&srs,ql_poly);
+    let qr_commitment_:G1 = compute_commitment(&srs,qr_poly);
+    let qo_commitment_:G1 = compute_commitment(&srs,qo_poly);
+    let qc_commitment_:G1 = compute_commitment(&srs,qc_poly);
+    let sigma_1_commitment_:G1 = compute_commitment(&srs,permutation_poly_sigma_1);
+    let sigma_2_commitment_:G1 = compute_commitment(&srs,permutation_poly_sigma_2);
+    let sigma_3_commitment_:G1 = compute_commitment(&srs,permutation_poly_sigma_3);
+    // [x]2 left
+
+
+    let alpha_ = alpha;
+    let beta_ = beta;
+    let gamma_ = gamma;
+    let z_challenge_ = z_challenge;
+    let v_challenge_ = v_challenge;
+    let k1_ = k1_k2[0];
+    let k2_ = k1_k2[1];
+
+    let l_basis_0_eval_:Fr = l_basis_0.evaluate(z_challenge_);
+    let z_h_poly_ = z_h_poly;
+
+    //Compute new challenge for batching
+    let [u_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
+
+
+    // Compute linearization commitment [r]1
+
+    let linearlization_commitment:G1 = (a_opening_*b_opening_*qm_commitment_ + b_opening_*qr_commitment_ + c_opening_*qo_commitment_ + qc_commitment_)
+                                     + (alpha_* ( (a_opening_+beta_*z_challenge_+gamma_)*(b_opening_+beta_*z_challenge_*k1_+gamma_)*(c_opening_+beta_*z_challenge_*k2_+gamma_)*z_commitment_)
+                                     - ( (a_opening_+beta*sigma_1_opening_+gamma_)* (b_opening_+beta*sigma_2_opening_+gamma_)*(c_opening_+beta*sigma_3_commitment_+gamma_)*z_w_opening_))
+                                     + (alpha*alpha_*(z_commitment_ - Fr::from(1))*l_basis_0_eval_)
+                                     - (z_h_poly_* (t_low_commitment_ + x_poly.evaluate(z_challenge_)*t_mid_commitment_ + x_2n_poly.evaluate(z_challenge_)*t_high_commitment_));
 
 }
 

@@ -22,8 +22,14 @@ use ark_serialize::CanonicalSerialize;
 use ark_serialize::Write;
 use ark_serialize::CanonicalDeserialize;
 
-use std::ops::Mul;
+use std::ops::{Mul};
 
+// Enum for proof
+#[derive(Debug)]
+enum ProofElement{
+    Group(G1),
+    Field(Fr)
+}
 
 
 // use ark_ff::fields::PrimeField;
@@ -277,7 +283,7 @@ fn lagrange_interpolation(x:&Vec<Fr>,y:Vec<Fr>)->DensePolynomial<Fr>{
         interpolated_poly = interpolated_poly + get_dense_uv_poly(vec![y[i]]) * li_x;
 
     }
-    println!("Interpolated polynomial: {:?}", &interpolated_poly);
+    // println!("Interpolated polynomial: {:?}", &interpolated_poly);
 
     interpolated_poly
 
@@ -473,7 +479,7 @@ fn compute_shifted_polynomial(poly_z: &DensePolynomial<Fr>,w: &Fr) -> DensePolyn
         let new_coeff = coeff * &w_power;
         zw_coeffs.push(new_coeff);
 
-        // Update w_power for the next iteration (w^(i+1))
+        // // Update w_power for the next iteration (w^(i+1))
         w_power *= w;
     }
 
@@ -759,11 +765,12 @@ fn main() {
     // 2.2.b Read circuit and add the position to a set, eg: a ->{w,k1w,k2w^2}
     //Map of set of positions Eg: a -> {1,w^2}
     let mut operand_map:HashMap<String,Vec<Fr>> = HashMap::new();
-
+    // println!("OPERANDLIST: {:?}",&operand_list);
     for operands_gate in &operand_list{
         for operand in operands_gate{
             //Check if the operand has already been checked
             if !operand_map.contains_key(operand) {
+
                 let index_list:Vec<(usize,usize)> = get_position_from_matrix(operand.to_string(),&operand_list);
 
                 //Extract positions
@@ -796,13 +803,27 @@ fn main() {
         permuted_root_unity_k2_y.push(permuted_root_unity_k2);
     }
 
-    let permutation_poly_sigma_1:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_y);
-    let permutation_poly_sigma_2:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_k1_y);
-    let permutation_poly_sigma_3:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_k2_y);
+    let permutation_poly_sigma_1:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_y.clone());
+    let permutation_poly_sigma_2:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_k1_y.clone());
+    let permutation_poly_sigma_3:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permuted_root_unity_k2_y.clone());
 
-    println!("Sigma1 :{:?}",permutation_poly_sigma_1);
-    println!("Sigma2 :{:?}",permutation_poly_sigma_2);
-    println!("Sigma3 :{:?}",permutation_poly_sigma_3);
+    // println!("Sigma1 :{:?}",permutation_poly_sigma_1);
+    // println!("Sigma2 :{:?}",permutation_poly_sigma_2);
+    // println!("Sigma3 :{:?}",permutation_poly_sigma_3);
+    // println!("->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+    // println!("EVALUATION DOMAIN: {:?}",&evaluation_domain);
+    // println!("------------------------------------------------------------------------------");
+    // println!("EVALUATION DOMAIN(K1): {:?}",&eval_domain_h_k1);
+    // println!("------------------------------------------------------------------------------");
+    // println!("EVALUATION DOMAIN(K2): {:?}",&eval_domain_h_k2);
+    // println!("------------------------------------------------------------------------------");
+    // println!("permuted_root_unity_y: {:?}",&permuted_root_unity_y);
+    // println!("------------------------------------------------------------------------------");
+    // println!("permuted_root_unity_k1_y: {:?}",&permuted_root_unity_k1_y);
+    // println!("------------------------------------------------------------------------------");
+    // println!("permuted_root_unity_k2_y: {:?}",&permuted_root_unity_k2_y);
+    // println!("->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+
 
 
     //Preprocessed transcript
@@ -885,10 +906,13 @@ fn main() {
     let [beta,gamma]: [Fr; 2] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");  
 
     //Compute permutation polynomial accumulations
+    // let mut permutation_poly_y:Vec<Fr> = vec![Fr::from(1)]; // Set z(w^0) = 1 [evals for interpolating permutation poly]
     let mut permutation_poly_y:Vec<Fr> = vec![Fr::from(1)]; // Set z(w^0) = 1 [evals for interpolating permutation poly]
-    for i in 1..circuit_size{
+
+    //Clever optimization from plonk paper on grandproduct argument
+    for i in 0..circuit_size-1{
         let mut cumulative_product:Fr = Fr::from(1);
-        for j in 1..i{
+        for j in 0..=i{
                         // (wi + beta*w^i+ gamma) * (wn+i + beta*k1w^i+ gamma) * (w2n+i + beta*k2w^i+ gamma)
             let f_i:Fr = (get_witness_from_trace(0,j,&execution_trace) + beta*evaluation_domain_h_k1_k2[j] + gamma)
                          *(get_witness_from_trace(1,j,&execution_trace) + beta*evaluation_domain_h_k1_k2[j+circuit_size] + gamma)
@@ -903,9 +927,10 @@ fn main() {
         }
         permutation_poly_y.push(cumulative_product);
     }
-     
+
     //Evaluation domain 
-    let z_poly_half:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permutation_poly_y); // (w^0,1),(w,y1)...
+    let z_poly_half:DensePolynomial<Fr> = lagrange_interpolation(&evaluation_domain,permutation_poly_y.clone()); // (w^0,1),(w,y1)...
+
     let l_basis_0:DensePolynomial<Fr> = compute_lagrange_basis(0,&evaluation_domain);
     // (b7x^2+ b8x+ b9)Zh(x) + z'(x)
     let z_permutation_poly = DensePolynomial::from_coefficients_vec(vec![Fr::from(random_scalars_b[8]),Fr::from(random_scalars_b[7]),Fr::from(random_scalars_b[6])]) * &z_h_poly + z_poly_half;
@@ -928,10 +953,12 @@ fn main() {
     let random_scalars_r3:Vec<Fr> = sample_random_scalars(2); // b10,b11
 
     // Compute t1(x),t2(x),t3(x)
-    let t_one_poly:DensePolynomial<Fr> = (&a_poly*&ql_poly + &b_poly*&qr_poly + &c_poly*&qo_poly + &a_poly*&b_poly*&qm_poly + &qc_poly)/&z_h_poly;
-    let t_two_poly:DensePolynomial<Fr> = ((&f_x * &z_permutation_poly) - (&g_x * &z_permutation_poly_wx))/&z_h_poly;
-    let t_three_poly:DensePolynomial<Fr> = ((&z_permutation_poly - DensePolynomial::from_coefficients_vec(vec![Fr::from(1)]))*&l_basis_0)/&z_h_poly;
-    let t_quotient_poly:DensePolynomial<Fr> = &t_one_poly + &t_two_poly*alpha + &t_three_poly*alpha*alpha;
+    assert!(z_permutation_poly.clone().evaluate(&evaluation_domain[1]) == z_permutation_poly_wx.clone().evaluate(&evaluation_domain[0]) );
+
+    let t_one_poly:DensePolynomial<Fr> = (&a_poly*&ql_poly + &b_poly*&qr_poly + &c_poly*&qo_poly + &a_poly*&b_poly*&qm_poly + &qc_poly);
+    let t_two_poly:DensePolynomial<Fr> = ((&f_x * &z_permutation_poly) - (&g_x * &z_permutation_poly_wx));
+    let t_three_poly:DensePolynomial<Fr> = ((&z_permutation_poly - DensePolynomial::from_coefficients_vec(vec![Fr::from(1)]))*&l_basis_0);
+    let t_quotient_poly:DensePolynomial<Fr> = (&t_one_poly + &t_two_poly*alpha + &t_three_poly*alpha*alpha)/&z_h_poly;
 
     // Split t(x) into tlow (n-1) , thigh (n-1), tmid (n+5)
 
@@ -956,9 +983,9 @@ fn main() {
     let t_high_poly = &t_high_poly_prime - get_poly_from_fr(b11); // t'high(x) - b11
 
     //Compute commitment
-    let t_low_commitment:G1 = compute_commitment(&srs,t_low_poly);
-    let t_mid_commitment:G1 = compute_commitment(&srs,t_mid_poly);
-    let t_high_commitment:G1 = compute_commitment(&srs,t_high_poly);
+    let t_low_commitment:G1 = compute_commitment(&srs,t_low_poly.clone());
+    let t_mid_commitment:G1 = compute_commitment(&srs,t_mid_poly.clone());
+    let t_high_commitment:G1 = compute_commitment(&srs,t_high_poly.clone());
 
     //Add commitment to fiat shamir state
     prover_state.add_points(&[t_low_commitment,t_mid_commitment,t_high_commitment]).expect("Fiat shamir error!! Group element addition failed");  
@@ -982,6 +1009,53 @@ fn main() {
     // (Round 5)
     // Get the challenge
     let [v_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
+
+    // Construct lineararization polynomial r(x)
+    let linearization_poly_r:DensePolynomial<Fr> = 
+        (&qm_poly*a_opening*b_opening + &ql_poly*a_opening + &qr_poly*b_opening + &qo_poly*c_opening + &qc_poly) 
+        + get_poly_from_fr(alpha) * ( &z_permutation_poly*(a_opening + beta*z_challenge + gamma)* (b_opening + beta*k1_k2[0]*z_challenge + gamma)* (c_opening + beta*k1_k2[1]*z_challenge + gamma) - (&(get_poly_from_fr(c_opening)+&permutation_poly_sigma_3*beta+get_poly_from_fr(gamma)) * z_w_opening * (a_opening+beta*sigma_1_opening+gamma) * (b_opening+beta*sigma_2_opening+gamma)))
+        + (&(&z_permutation_poly - get_poly_from_fr(Fr::from(1))) * l_basis_0.evaluate(&z_challenge) * alpha*alpha) 
+        - (&(&t_low_poly + &t_mid_poly*x_n_poly.evaluate(&z_challenge) + &t_high_poly *x_2n_poly.evaluate(&z_challenge)) * z_h_poly.evaluate(&z_challenge));
+
+
+    println!("Linearization poly eval at z: {:?}",linearization_poly_r.evaluate(&z_challenge));
+
+    // Construct opening proof polynomial
+    let w_opening_z_poly:DensePolynomial<Fr> = (&linearization_poly_r  // r(x)
+                                             + &(&a_poly - get_poly_from_fr(a_opening))*v_challenge // (a(x)-a_opening)*v
+                                             + &(&b_poly - get_poly_from_fr(b_opening))*v_challenge*v_challenge // (b(x)-b_opening)*v^2
+                                             + &(&c_poly - get_poly_from_fr(c_opening))*v_challenge*v_challenge*v_challenge // (c(x)-c_opening)*v^3
+                                             + &(&permutation_poly_sigma_1 - get_poly_from_fr(sigma_1_opening))*v_challenge*v_challenge*v_challenge*v_challenge // (Sigma1(x)-sigma1_opening)*v^4
+                                             + &(&permutation_poly_sigma_2 - get_poly_from_fr(sigma_2_opening))*v_challenge*v_challenge*v_challenge*v_challenge*v_challenge) // (Sigma2(x)-sigma2_opening)*v^5
+                                             / (DensePolynomial::from_coefficients_vec(vec![Fr::from(-z_challenge),Fr::from(1)])); // (x-z_challenge)   
+
+    let w_opening_zw_poly:DensePolynomial<Fr> = (z_permutation_poly - get_poly_from_fr(z_w_opening)) //(z(x) - z_w_opening)/(x-z_challenge*w)
+                                              / ((DensePolynomial::from_coefficients_vec(vec![Fr::from(-(z_challenge*&evaluation_domain[1])),Fr::from(1)])));
+
+
+    //Compute commitments
+    let w_opening_z_commitment:G1 = compute_commitment(&srs,w_opening_z_poly);
+    let w_opening_zw_commitment:G1 = compute_commitment(&srs,w_opening_zw_poly);
+
+    let proof:Vec<ProofElement> = vec![
+        ProofElement::Group(a_commitment),
+        ProofElement::Group(b_commitment),
+        ProofElement::Group(c_commitment),
+        ProofElement::Group(z_commitment),
+        ProofElement::Group(t_low_commitment),
+        ProofElement::Group(t_mid_commitment),
+        ProofElement::Group(t_high_commitment),
+        ProofElement::Group(w_opening_z_commitment),
+        ProofElement::Group(w_opening_zw_commitment),
+        ProofElement::Field(a_opening),
+        ProofElement::Field(b_opening),
+        ProofElement::Field(c_opening),
+        ProofElement::Field(z_w_opening),
+        ProofElement::Field(sigma_1_opening),
+        ProofElement::Field(sigma_2_opening)
+    ];
+    println!("Proof:{:?}",proof);
+
 
 }
 

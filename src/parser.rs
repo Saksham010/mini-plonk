@@ -4,10 +4,11 @@ use regex::Regex;
 use std::io::BufReader;
 use serde_json;
 use std::collections::{HashMap,HashSet};
-use ark_bn254::{Fr,FqConfig,G1Projective as G1, G2Projective as G2}; // Scalar field
+use ark_bn254::{Bn254,Fr,FqConfig,Fq2Config,G1Projective as G1, G2Projective as G2}; // Scalar field
 use ark_ff::fields::{Field,PrimeField};
-use ark_ff::{Fp,MontBackend,UniformRand};
+use ark_ff::{Fp,Fp2,MontBackend,UniformRand,QuadExtField,Fp2ConfigWrapper};
 use rand::thread_rng;
+use ark_ec::pairing::Pairing;
 
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain, univariate::DensePolynomial}; 
 use ark_poly::DenseUVPolynomial;
@@ -23,7 +24,7 @@ use ark_serialize::Write;
 use ark_serialize::CanonicalDeserialize;
 
 use std::ops::{Mul};
-
+   
 // Enum for proof
 #[derive(Debug)]
 enum ProofElement{
@@ -31,9 +32,6 @@ enum ProofElement{
     Field(Fr)
 }
 
-
-// use ark_ff::fields::PrimeField;
-   
 const OPERATIONS:[&str;4] = ["*","+","-","/"];
 
 // Macro to simulate default params
@@ -323,9 +321,10 @@ fn get_eval_k(tau:Fr,times:usize)->Fr{
 
 }
 
-// Load srs
-fn load_srs_from_file(file_name:&str) -> Result<Vec<G1>>{
-    let mut final_srs:Vec<G1> = Vec::new();
+// Load SRS
+fn load_srs_from_file(file_name:&str) -> Result<(Vec<G1>,Vec<G2>)>{
+    let mut final_srs_one:Vec<G1> = Vec::new();
+    let mut final_srs_two:Vec<G2> = Vec::new();
 
     let mut file = File::open(file_name).unwrap();
     println!("Loading buffer....");
@@ -337,6 +336,8 @@ fn load_srs_from_file(file_name:&str) -> Result<Vec<G1>>{
     println!("Buffer loaded....");
 
     let mut cursor = Cursor::new(&buffer[..]);
+
+    let mut index = 0;
 
     //Deserialze the file
     while (cursor.position() as usize) < cursor.get_ref().len(){ 
@@ -361,30 +362,106 @@ fn load_srs_from_file(file_name:&str) -> Result<Vec<G1>>{
         let mut cursory = Cursor::new(y_element);
         let mut cursorz = Cursor::new(z_element);
 
-        let deserialized_x:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorx).unwrap();
-        let deserialized_y:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursory).unwrap();
-        let deserialized_z:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorz).unwrap();
+        //G2 element
+        if index == 0 || index == 1{
+            let deserialized_x:QuadExtField<Fp2ConfigWrapper<Fq2Config>> = Fp2::deserialize_uncompressed(&mut cursorx).unwrap();
+            let deserialized_y:QuadExtField<Fp2ConfigWrapper<Fq2Config>> = Fp2::deserialize_uncompressed(&mut cursory).unwrap();
+            let deserialized_z:QuadExtField<Fp2ConfigWrapper<Fq2Config>> = Fp2::deserialize_uncompressed(&mut cursorz).unwrap();
 
-        let element:G1 = G1::new_unchecked(deserialized_x, deserialized_y, deserialized_z); //Note only unchecked returns projective representation, since we construct from already existing group we can ignore the check
+            let element:G2 = G2::new_unchecked(deserialized_x, deserialized_y, deserialized_z); //Note only unchecked returns projective representation, since we construct from already existing group we can ignore the check
+            final_srs_two.push(element);
+        }else{
+            let deserialized_x:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorx).unwrap();
+            let deserialized_y:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursory).unwrap();
+            let deserialized_z:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorz).unwrap();
 
-        final_srs.push(element);
+            let element:G1 = G1::new_unchecked(deserialized_x, deserialized_y, deserialized_z); //Note only unchecked returns projective representation, since we construct from already existing group we can ignore the check
+            final_srs_one.push(element);
+        }
+
+        //Update index 
+        index = index+1;
     }
 
-    Ok(final_srs)
+    Ok((final_srs_one,final_srs_two))
 }
 
 //Compute commitment [a]1
 fn compute_commitment(srs:&Vec<G1>,x_poly:DensePolynomial<Fr>)->G1{
-    let mut val_commitment:G1 = *srs.get(0).expect("Index out of bounds"); // g^1
+
+    // println!("Poly: {:?}",&x_poly);
+        // println!("Coeffs: {:?}",&x_poly.coeffs());
+    //If polynomial is empty
+    if x_poly.coeffs().len() == 0{ 
+        let g_i_tau:G1 = *srs.get(0).expect("Index out of bounds");
+        let g_i_tau_s:G1 = g_i_tau.mul(Fr::from(0));
+        return g_i_tau_s;
+    }
+
+    // let mut val_commitment:G1 = *srs.get(0).expect("Index out of bounds"); // g^1
+    let mut val_commitment:Vec<G1> = Vec::new();
 
     for (i,coeff) in x_poly.coeffs().iter().enumerate(){ // Ensure order of a_poly.coeffs()
         // We get powers of tau from KZG setup and use here
         let g_i_tau:G1 = *srs.get(i).expect("Index out of bounds");
         let g_i_tau_s:G1 = g_i_tau.mul(*coeff);
-        val_commitment = val_commitment + g_i_tau_s; // g^tau^2^a * g^tau*b * g^1^c = g^(a*tau^2 + b*tau + c) (As * requires pairing g^a * g^b is done using + operation)
+        // val_commitment = val_commitment + g_i_tau_s; // g^tau^2^a * g^tau*b * g^1^c = g^(a*tau^2 + b*tau + c) (As * requires pairing g^a * g^b is done using + operation)
+       if val_commitment.len() == 0{
+            println!("len0");
+            val_commitment.push(g_i_tau_s);
+        }else{
+            println!("Push at: {:?}",val_commitment.len());
+
+            val_commitment[0] = val_commitment[0] + g_i_tau_s;
+        }    
     }
-    val_commitment
+    val_commitment[0]
 }
+//Compute commitment in fr: [a]1
+fn compute_commitment_fr_g1(srs:&Vec<G1>,x_:Fr)->G1{
+
+    let x_poly = DensePolynomial::from_coefficients_vec(vec![x_]);
+    let mut val_commitment:Vec<G1> = Vec::new();
+    // let mut val_commitment:G1 = *srs.get(0).expect("Index out of bounds"); // g^1
+
+    for (i,coeff) in x_poly.coeffs().iter().enumerate(){ // Ensure order of a_poly.coeffs()
+        // We get powers of tau from KZG setup and use here
+        let g_i_tau:G1 = *srs.get(i).expect("Index out of bounds");
+        let g_i_tau_s:G1 = g_i_tau.mul(*coeff);
+
+
+        println!("INSIDE FRCOMMIT G_I_TAU: {:?}",&g_i_tau);
+        println!("INSIDE coeff : {:?}",&coeff);
+        println!("INSIDE FRCOMMIT G_I_TAU_s: {:?}",&g_i_tau_s);
+        if val_commitment.len() == 0{
+            val_commitment.push(g_i_tau_s);
+        }else{
+            val_commitment[0] = val_commitment[0] + g_i_tau_s;
+        }
+        // val_commitment = val_commitment + g_i_tau_s; // g^tau^2^a * g^tau*b * g^1^c = g^(a*tau^2 + b*tau + c) (As * requires pairing g^a * g^b is done using + operation)
+    }
+    val_commitment[0]
+}
+//Compute commitment in g2: [a]2
+fn compute_commitment_g2(srs:&Vec<G2>,x_poly:DensePolynomial<Fr>)->G2{
+    // let mut val_commitment:G2 = *srs.get(0).expect("Index out of bounds"); // g^1
+    let mut val_commitment:Vec<G2> = Vec::new();
+
+
+    for (i,coeff) in x_poly.coeffs().iter().enumerate(){ // Ensure order of a_poly.coeffs()
+        // We get powers of tau from KZG setup and use here
+        let g_i_tau:G2 = *srs.get(i).expect("Index out of bounds");
+        let g_i_tau_s:G2 = g_i_tau.mul(*coeff);
+        if val_commitment.len() == 0{
+            val_commitment.push(g_i_tau_s);
+        }else{
+            val_commitment[0] = val_commitment[0] + g_i_tau_s;
+        }
+        // val_commitment = val_commitment + g_i_tau_s; // g^tau^2^a * g^tau*b * g^1^c = g^(a*tau^2 + b*tau + c) (As * requires pairing g^a * g^b is done using + operation)
+    }
+    val_commitment[0]
+}
+
 
 // Get position of character from matrix 
 fn get_position_from_matrix<T:std::cmp::PartialEq>(element:T,matrix:&Vec<Vec<T>>)->Vec<(usize,usize)>{
@@ -746,7 +823,7 @@ fn main() {
     // let g2 = G2::generator(); //Generator on the curve G2projective
 
     //Fetch SRS
-    let mut srs:Vec<G1> = load_srs_from_file("./kzg_srs.zkey").expect("Failed to load");
+    let (srs,srs_two):(Vec<G1>,Vec<G2>) = load_srs_from_file("./kzg_srs.zkey").expect("Failed to load");
 
     let mut a_commitment:G1 = compute_commitment(&srs,a_poly.clone());
     let mut b_commitment:G1 = compute_commitment(&srs,b_poly.clone());
@@ -1130,8 +1207,8 @@ fn main() {
     let sigma_1_commitment_:G1 = compute_commitment(&srs,permutation_poly_sigma_1);
     let sigma_2_commitment_:G1 = compute_commitment(&srs,permutation_poly_sigma_2);
     let sigma_3_commitment_:G1 = compute_commitment(&srs,permutation_poly_sigma_3);
-    // [x]2 left
-
+    let x_commitment_g2_:G2 = compute_commitment_g2(&srs_two,x_poly.clone());
+    let one_g2_commitment:G2 = compute_commitment_g2(&srs_two,get_poly_from_fr(Fr::from(1)));
 
     let alpha_ = alpha;
     let beta_ = beta;
@@ -1141,20 +1218,42 @@ fn main() {
     let k1_ = k1_k2[0];
     let k2_ = k1_k2[1];
 
-    let l_basis_0_eval_:Fr = l_basis_0.evaluate(z_challenge_);
+    let l_basis_0_eval_:Fr = l_basis_0.evaluate(&z_challenge_);
     let z_h_poly_ = z_h_poly;
 
     //Compute new challenge for batching
     let [u_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
 
+    println!("SRS at0 : {:?}",&srs[0]);
+    let g_0:G1 = compute_commitment_fr_g1(&srs,Fr::from(2));
+
+    assert_eq!(srs[0]*Fr::from(2), g_0);
+    assert_eq!(srs_two[0]*Fr::from(1),one_g2_commitment);
 
     // Compute linearization commitment [r]1
 
-    let linearlization_commitment:G1 = (a_opening_*b_opening_*qm_commitment_ + b_opening_*qr_commitment_ + c_opening_*qo_commitment_ + qc_commitment_)
-                                     + (alpha_* ( (a_opening_+beta_*z_challenge_+gamma_)*(b_opening_+beta_*z_challenge_*k1_+gamma_)*(c_opening_+beta_*z_challenge_*k2_+gamma_)*z_commitment_)
-                                     - ( (a_opening_+beta*sigma_1_opening_+gamma_)* (b_opening_+beta*sigma_2_opening_+gamma_)*(c_opening_+beta*sigma_3_commitment_+gamma_)*z_w_opening_))
-                                     + (alpha*alpha_*(z_commitment_ - Fr::from(1))*l_basis_0_eval_)
-                                     - (z_h_poly_* (t_low_commitment_ + x_poly.evaluate(z_challenge_)*t_mid_commitment_ + x_2n_poly.evaluate(z_challenge_)*t_high_commitment_));
+    let linearlization_commitment_:G1 = (qm_commitment_*a_opening_*b_opening_ + qr_commitment_*b_opening_ + qo_commitment_*c_opening_ + qc_commitment_)
+                                     + ( (z_commitment_*(a_opening_+beta_*z_challenge_+gamma_)*(b_opening_+beta_*z_challenge_*k1_+gamma_)*(c_opening_+beta_*z_challenge_*k2_+gamma_) )
+                                     - ( (sigma_3_commitment_*beta+compute_commitment_fr_g1(&srs,c_opening_+gamma_))*(a_opening_+beta*sigma_1_opening_+gamma_)* (b_opening_+beta*sigma_2_opening_+gamma_)*z_w_opening_)*alpha_)
+                                     + ((z_commitment_ - compute_commitment_fr_g1(&srs,Fr::from(1)))*l_basis_0_eval_*alpha*alpha_)
+                                     - ((t_low_commitment_ + t_mid_commitment_*x_poly.evaluate(&z_challenge_) + t_high_commitment_*x_2n_poly.evaluate(&z_challenge_))*z_h_poly_.evaluate(&z_challenge));
 
+    let f_commitment_:G1 = linearlization_commitment_ 
+                         + (a_commitment_- compute_commitment_fr_g1(&srs,a_opening_))*v_challenge 
+                         + (b_commitment_- compute_commitment_fr_g1(&srs,b_opening_))*v_challenge*v_challenge
+                         + (c_commitment_- compute_commitment_fr_g1(&srs,c_opening_))*v_challenge*v_challenge*v_challenge
+                         + (sigma_1_commitment_- compute_commitment_fr_g1(&srs,sigma_1_opening_))*v_challenge*v_challenge*v_challenge*v_challenge
+                         + (sigma_2_commitment_- compute_commitment_fr_g1(&srs,sigma_2_opening_))*v_challenge*v_challenge*v_challenge*v_challenge*v_challenge;
+
+    let e_commitment_:G1 = z_commitment_ - compute_commitment_fr_g1(&srs,z_w_opening_);
+
+    // Batch evaluation check
+
+        // let left_pairing_part = Bn254::pairing(a_commitment_g1, b_commitment_g2);
+
+    let left_pairing_part = Bn254::pairing(w_opening_z_commitment_+w_opening_zw_commitment_*u_challenge,x_commitment_g2_);
+    let right_pairing_part = Bn254::pairing(w_opening_z_commitment_*z_challenge_ +w_opening_zw_commitment_*u_challenge*z_challenge_*evaluation_domain[1]+f_commitment_+e_commitment_*u_challenge,one_g2_commitment);
+
+    assert_eq!(left_pairing_part,right_pairing_part);
 }
 

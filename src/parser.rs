@@ -407,11 +407,8 @@ fn compute_commitment(srs:&Vec<G1>,x_poly:DensePolynomial<Fr>)->G1{
         let g_i_tau_s:G1 = g_i_tau.mul(*coeff);
         // val_commitment = val_commitment + g_i_tau_s; // g^tau^2^a * g^tau*b * g^1^c = g^(a*tau^2 + b*tau + c) (As * requires pairing g^a * g^b is done using + operation)
        if val_commitment.len() == 0{
-            println!("len0");
             val_commitment.push(g_i_tau_s);
         }else{
-            println!("Push at: {:?}",val_commitment.len());
-
             val_commitment[0] = val_commitment[0] + g_i_tau_s;
         }    
     }
@@ -429,10 +426,6 @@ fn compute_commitment_fr_g1(srs:&Vec<G1>,x_:Fr)->G1{
         let g_i_tau:G1 = *srs.get(i).expect("Index out of bounds");
         let g_i_tau_s:G1 = g_i_tau.mul(*coeff);
 
-
-        println!("INSIDE FRCOMMIT G_I_TAU: {:?}",&g_i_tau);
-        println!("INSIDE coeff : {:?}",&coeff);
-        println!("INSIDE FRCOMMIT G_I_TAU_s: {:?}",&g_i_tau_s);
         if val_commitment.len() == 0{
             val_commitment.push(g_i_tau_s);
         }else{
@@ -1225,18 +1218,18 @@ fn main() {
     let [u_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
 
     println!("SRS at0 : {:?}",&srs[0]);
-    let g_0:G1 = compute_commitment_fr_g1(&srs,Fr::from(2));
+    let g_0:G1 = compute_commitment_fr_g1(&srs,Fr::from(1));
 
-    assert_eq!(srs[0]*Fr::from(2), g_0);
+    assert_eq!(srs[0]*Fr::from(1), g_0);
     assert_eq!(srs_two[0]*Fr::from(1),one_g2_commitment);
 
     // Compute linearization commitment [r]1
 
-    let linearlization_commitment_:G1 = (qm_commitment_*a_opening_*b_opening_ + qr_commitment_*b_opening_ + qo_commitment_*c_opening_ + qc_commitment_)
+    let linearlization_commitment_:G1 = (qm_commitment_*a_opening_*b_opening_ +ql_commitment_*a_opening_ +qr_commitment_*b_opening_ + qo_commitment_*c_opening_ + qc_commitment_)
                                      + ( (z_commitment_*(a_opening_+beta_*z_challenge_+gamma_)*(b_opening_+beta_*z_challenge_*k1_+gamma_)*(c_opening_+beta_*z_challenge_*k2_+gamma_) )
-                                     - ( (sigma_3_commitment_*beta+compute_commitment_fr_g1(&srs,c_opening_+gamma_))*(a_opening_+beta*sigma_1_opening_+gamma_)* (b_opening_+beta*sigma_2_opening_+gamma_)*z_w_opening_)*alpha_)
-                                     + ((z_commitment_ - compute_commitment_fr_g1(&srs,Fr::from(1)))*l_basis_0_eval_*alpha*alpha_)
-                                     - ((t_low_commitment_ + t_mid_commitment_*x_poly.evaluate(&z_challenge_) + t_high_commitment_*x_2n_poly.evaluate(&z_challenge_))*z_h_poly_.evaluate(&z_challenge));
+                                     - ( (sigma_3_commitment_*beta_+compute_commitment_fr_g1(&srs,c_opening_+gamma_))*(a_opening_+beta*sigma_1_opening_+gamma_)* (b_opening_+beta*sigma_2_opening_+gamma_)*z_w_opening_))*alpha_
+                                     + ((z_commitment_ - compute_commitment_fr_g1(&srs,Fr::from(1)))*l_basis_0_eval_*alpha_*alpha_)
+                                     - ((t_low_commitment_ + t_mid_commitment_*x_n_poly.evaluate(&z_challenge_) + t_high_commitment_*x_2n_poly.evaluate(&z_challenge_))*z_h_poly_.evaluate(&z_challenge));
 
     let f_commitment_:G1 = linearlization_commitment_ 
                          + (a_commitment_- compute_commitment_fr_g1(&srs,a_opening_))*v_challenge 
@@ -1248,12 +1241,11 @@ fn main() {
     let e_commitment_:G1 = z_commitment_ - compute_commitment_fr_g1(&srs,z_w_opening_);
 
     // Batch evaluation check
-
-        // let left_pairing_part = Bn254::pairing(a_commitment_g1, b_commitment_g2);
-
     let left_pairing_part = Bn254::pairing(w_opening_z_commitment_+w_opening_zw_commitment_*u_challenge,x_commitment_g2_);
     let right_pairing_part = Bn254::pairing(w_opening_z_commitment_*z_challenge_ +w_opening_zw_commitment_*u_challenge*z_challenge_*evaluation_domain[1]+f_commitment_+e_commitment_*u_challenge,one_g2_commitment);
 
     assert_eq!(left_pairing_part,right_pairing_part);
+
+    println!("Proof verified!!");
 }
 

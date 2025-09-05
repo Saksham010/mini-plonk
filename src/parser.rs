@@ -24,9 +24,12 @@ use ark_serialize::Write;
 use ark_serialize::CanonicalDeserialize;
 
 use std::ops::{Mul};
-   
+
+use base64::{engine::general_purpose, Engine as _}; // Import the Engine trait
+
 // Enum for proof
 #[derive(Debug)]
+#[derive(Clone)]
 enum ProofElement{
     Group(G1),
     Field(Fr)
@@ -234,11 +237,10 @@ fn get_evals(execution_trace:&Vec<Vec<Fr>>,col_index:usize)->Vec<Fr>{
 
 //Generate roots of unity
 fn generate_evaluation_domain(size:usize)->Vec<Fr>{
-    //(TODO Limit to the size of required domain)
     let domain = Radix2EvaluationDomain::<Fr>::new(size).expect("Evaluation domain generation failed!!");  
     let roots: Vec<Fr> = domain.elements().collect(); 
     println!("Evaluation domain elements: {:?}",roots);
-    roots
+    roots[0..size].to_vec() //(Limit to the size of required domain for size which is not powers of 2)
 }
 
 // Get evaluation domain at i'th position
@@ -603,6 +605,113 @@ fn get_fr_element(element:&ProofElement)->Fr{
         panic!("Expected a Fr element");
     };
     opening
+}
+
+//Generate proof string
+fn generate_proof_string(proof:Vec<ProofElement>)->String{
+    let mut proof_binary:Vec<u8> = Vec::new();
+    for (i,p) in proof.iter().enumerate(){
+
+        //For G1 elements
+        if i >=0 && i <= 8{
+
+            let _element:G1 = get_g1_element(&p);
+            let(element_x,element_y,element_z) = (_element.x,_element.y,_element.z);
+
+            let mut serialized_data_x = Vec::new();
+            let mut serialized_data_y = Vec::new();
+            let mut serialized_data_z = Vec::new();
+
+            element_x.serialize_uncompressed(&mut serialized_data_x);
+            element_y.serialize_uncompressed(&mut serialized_data_y);
+            element_z.serialize_uncompressed(&mut serialized_data_z);
+
+            let x_len: Vec<u8> = vec![serialized_data_x.len() as u8];
+            let y_len: Vec<u8> = vec![serialized_data_y.len() as u8];
+            let z_len: Vec<u8> = vec![serialized_data_z.len() as u8];
+
+            proof_binary.extend(x_len);
+            proof_binary.extend(serialized_data_x);
+            proof_binary.extend(y_len);
+            proof_binary.extend(serialized_data_y);
+            proof_binary.extend(z_len);
+            proof_binary.extend(serialized_data_z);    
+        }else{
+            // For Fr element
+            let element:Fr = get_fr_element(&p);
+            let mut serialized_data = Vec::new();
+            element.serialize_uncompressed(&mut serialized_data);
+            let data_len: Vec<u8> = vec![serialized_data.len() as u8];
+            proof_binary.extend(data_len);
+            proof_binary.extend(serialized_data); 
+        }
+    }
+
+    let proof_string = general_purpose::STANDARD.encode(proof_binary.clone());
+    proof_string
+    
+}
+
+// Parse proof string
+fn parse_proof(proof:&str) -> Vec<ProofElement>{
+    let proof_binary:Vec<u8> =  general_purpose::STANDARD.decode(proof).expect("Invalid proof !!");
+    let mut cursor = Cursor::new(&proof_binary[..]);
+    let mut iteration_no = 0;
+    let mut deserialized_proof:Vec<ProofElement> = Vec::new();
+
+    //Deserialize proof elements
+    while (cursor.position() as usize) < cursor.get_ref().len(){ 
+        // G1 elements
+        if iteration_no < 9 {
+
+            //Read the length
+            let mut element_len =[0u8];
+
+            cursor.read_exact(&mut element_len).expect("Invalid proof !!"); // Read x length
+            let mut x_element: Vec<u8> = vec![0u8;element_len[0] as usize];
+            cursor.read_exact(&mut x_element).expect("Invalid proof !!"); //Read x 
+
+            cursor.read_exact(&mut element_len).expect("Invalid proof !!"); // Read y length
+            let mut y_element: Vec<u8> = vec![0u8;element_len[0] as usize];
+            cursor.read_exact(&mut y_element).expect("Invalid proof !!"); //Read y 
+
+            cursor.read_exact(&mut element_len).expect("Invalid proof !!"); // Read z length
+            let mut z_element: Vec<u8> = vec![0u8;element_len[0] as usize];
+            cursor.read_exact(&mut z_element).expect("Invalid proof !!"); //Read z
+
+            //Deseralize
+            let mut cursorx = Cursor::new(x_element);
+            let mut cursory = Cursor::new(y_element);
+            let mut cursorz = Cursor::new(z_element);
+
+            //G1 elements
+            let deserialized_x:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorx).expect("Invalid proof !!");
+            let deserialized_y:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursory).expect("Invalid proof !!");
+            let deserialized_z:Fp<MontBackend<FqConfig,4>,4> = Fp::deserialize_uncompressed(&mut cursorz).expect("Invalid proof !!");
+    
+            let element:G1 = G1::new_unchecked(deserialized_x, deserialized_y, deserialized_z); //Note only unchecked returns projective representation, since we construct from already existing group we can ignore the check
+            deserialized_proof.push(ProofElement::Group(element)); //Push the element
+            
+        }else {
+            // Fr elements
+
+            //Read the length
+            let mut element_len =[0u8];
+            cursor.read_exact(&mut element_len).expect("Invalid proof !!"); // Read element length
+            let mut element: Vec<u8> = vec![0u8;element_len[0] as usize];
+            cursor.read_exact(&mut element).expect("Invalid proof !!"); //Read element
+
+            //Deseralize
+            let mut cursor_element = Cursor::new(element);
+            let deserialized_element:Fr = Fp::deserialize_uncompressed(&mut cursor_element).expect("Invalid proof !!");
+            deserialized_proof.push(ProofElement::Field(deserialized_element)); //Push the element
+        }
+
+        iteration_no = iteration_no+1;
+
+    }
+
+    deserialized_proof
 }
 
 fn main() {
@@ -1156,15 +1265,21 @@ fn main() {
         ProofElement::Field(sigma_1_opening),
         ProofElement::Field(sigma_2_opening)
     ];
-    println!("Proof:{:?}",proof);
 
     // Add proof for fiat shamir
     prover_state.add_points(&[a_commitment,b_commitment,c_commitment,z_commitment,t_low_commitment,t_mid_commitment,t_high_commitment,w_opening_z_commitment,w_opening_zw_commitment]).expect("Fiat shamir error!! Group element addition failed");  
 
+    // Convert proof to string
+    let proof_string = generate_proof_string(proof.clone());
+    println!("Proof:{:?}",proof_string);
+
     //Verifier
 
+    // Convert the proof string back to list of ProofElement
+    let proof_vr:Vec<ProofElement> = parse_proof(&proof_string);
+
     //1. Validate proof elements
-    for (i,element) in proof.iter().enumerate(){
+    for (i,element) in proof_vr.iter().enumerate(){
         match *element { 
             ProofElement::Group(G1) => {if i >8 {panic!("Invalid proof!!: Proof has more than 9 commitment");}},
             ProofElement::Field(Fr) => {if i <= 8 {panic!("Invalid proof!!: Parsing proof failed");}},
@@ -1174,22 +1289,22 @@ fn main() {
     }
 
     //Retrieve proof elements
-    let a_commitment_:G1 = get_g1_element(&proof[0]); 
-    let b_commitment_:G1 = get_g1_element(&proof[1]); 
-    let c_commitment_:G1 = get_g1_element(&proof[2]); 
-    let z_commitment_:G1 = get_g1_element(&proof[3]); 
-    let t_low_commitment_:G1 = get_g1_element(&proof[4]); 
-    let t_mid_commitment_:G1 = get_g1_element(&proof[5]); 
-    let t_high_commitment_:G1 = get_g1_element(&proof[6]); 
-    let w_opening_z_commitment_:G1 = get_g1_element(&proof[7]); 
-    let w_opening_zw_commitment_:G1 = get_g1_element(&proof[8]);
+    let a_commitment_:G1 = get_g1_element(&proof_vr[0]); 
+    let b_commitment_:G1 = get_g1_element(&proof_vr[1]); 
+    let c_commitment_:G1 = get_g1_element(&proof_vr[2]); 
+    let z_commitment_:G1 = get_g1_element(&proof_vr[3]); 
+    let t_low_commitment_:G1 = get_g1_element(&proof_vr[4]); 
+    let t_mid_commitment_:G1 = get_g1_element(&proof_vr[5]); 
+    let t_high_commitment_:G1 = get_g1_element(&proof_vr[6]); 
+    let w_opening_z_commitment_:G1 = get_g1_element(&proof_vr[7]); 
+    let w_opening_zw_commitment_:G1 = get_g1_element(&proof_vr[8]);
 
-    let a_opening_:Fr = get_fr_element(&proof[9]);
-    let b_opening_:Fr = get_fr_element(&proof[10]);
-    let c_opening_:Fr = get_fr_element(&proof[11]);
-    let z_w_opening_:Fr = get_fr_element(&proof[12]);
-    let sigma_1_opening_:Fr = get_fr_element(&proof[13]);
-    let sigma_2_opening_:Fr = get_fr_element(&proof[14]);
+    let a_opening_:Fr = get_fr_element(&proof_vr[9]);
+    let b_opening_:Fr = get_fr_element(&proof_vr[10]);
+    let c_opening_:Fr = get_fr_element(&proof_vr[11]);
+    let z_w_opening_:Fr = get_fr_element(&proof_vr[12]);
+    let sigma_1_opening_:Fr = get_fr_element(&proof_vr[13]);
+    let sigma_2_opening_:Fr = get_fr_element(&proof_vr[14]);
 
     //Compute necessary commitments
     let qm_commitment_:G1 = compute_commitment(&srs,qm_poly);
@@ -1217,11 +1332,7 @@ fn main() {
     //Compute new challenge for batching
     let [u_challenge]: [Fr; 1] = prover_state.challenge_scalars().expect("Fiat shamir error!! Challenge genration failed");
 
-    println!("SRS at0 : {:?}",&srs[0]);
     let g_0:G1 = compute_commitment_fr_g1(&srs,Fr::from(1));
-
-    assert_eq!(srs[0]*Fr::from(1), g_0);
-    assert_eq!(srs_two[0]*Fr::from(1),one_g2_commitment);
 
     // Compute linearization commitment [r]1
 
